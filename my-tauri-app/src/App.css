@@ -1,0 +1,43 @@
+.app-shell {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-main);
+}
+
+.terminal-header {
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 14px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+  font-family: monospace;
+}
+
+.session-id {
+  color: var(--accent-success);
+  font-size: 14px;
+}
+
+.disconnect-btn {
+  background: transparent;
+  border: 1px solid var(--accent-danger);
+  color: var(--accent-danger);
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.disconnect-btn:hover {
+  cursor: pointer;
+  background: var(--accent-danger);
+  color: #000;
+}
+
+.terminal-container {
+  flex: 1;
+  background: #0b0e14;
+  padding: 8px;
+}
