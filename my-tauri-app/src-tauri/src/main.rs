@@ -23,41 +23,78 @@ struct AppState {
 }
 
 /* =========================
-   AUTH PROBE (PHASE 1)
+   HOST FINGERPRINT PROBE
    ========================= */
+
+#[tauri::command]
+fn probe_ssh_host(app: AppHandle, ip: String) -> Result<String, String> {
+    let plink = resolve_plink_path(&app)?;
+
+    println!("[HOST PROBE] Fetching fingerprint for {}", ip);
+
+    let output = Command::new(&plink)
+        .arg("-ssh")
+        .arg("-batch")
+        .arg("-no-antispoof")
+        .arg(format!("dummy@{}", ip))
+        .output()
+        .map_err(|e| format!("Host probe failed: {}", e))?;
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    println!("[HOST PROBE] stderr:\n{}", stderr);
+
+    for line in stderr.lines() {
+        if line.contains("SHA256:") {
+            let fp = line.trim().to_string();
+            println!("[HOST PROBE] Fingerprint found: {}", fp);
+            return Ok(fp);
+        }
+    }
+
+    Err("Unable to extract server fingerprint".into())
+}
+
+/* =========================
+   AUTH PROBE (WITH TRUST)
+   ========================= */
+
 fn probe_ssh_auth(
     plink: &str,
     ip: &str,
     user: &str,
     password: &str,
+    fingerprint: &str,
 ) -> Result<(), String> {
-    println!("[PROBE] Starting SSH auth probe");
+    println!("[AUTH PROBE] Verifying credentials for {}@{}", user, ip);
 
     let output = Command::new(plink)
         .arg("-ssh")
-        .arg("-t")          // PTY required
-        .arg("-batch")      // no prompts
+        .arg("-t")
+        .arg("-batch")
+        .arg("-hostkey")
+        .arg(fingerprint)
         .arg("-pw")
         .arg(password)
         .arg(format!("{}@{}", user, ip))
         .arg("exit")
         .output()
-        .map_err(|e| format!("SSH spawn failed: {}", e))?;
+        .map_err(|e| format!("Auth probe failed: {}", e))?;
 
-    println!("[PROBE] exit status: {:?}", output.status);
-    println!("[PROBE] stdout:\n{}", String::from_utf8_lossy(&output.stdout));
-    println!("[PROBE] stderr:\n{}", String::from_utf8_lossy(&output.stderr));
+    println!("[AUTH PROBE] status: {:?}", output.status);
+    println!(
+        "[AUTH PROBE] stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     if output.status.success() {
-        println!("[PROBE] SSH authentication OK");
+        println!("[AUTH PROBE] Authentication OK");
         return Ok(());
     }
 
     let stderr = String::from_utf8_lossy(&output.stderr);
 
-    if stderr.contains("Access denied")
-        || stderr.contains("password")
-    {
+    if stderr.contains("Access denied") || stderr.contains("password") {
         return Err("Invalid username or password".into());
     }
 
@@ -72,7 +109,7 @@ fn probe_ssh_auth(
 }
 
 /* =========================
-   START SSH SESSION (PHASE 2)
+   START SSH SESSION
    ========================= */
 
 #[tauri::command]
@@ -82,16 +119,20 @@ fn start_ssh_session(
     ip: String,
     user: String,
     password: String,
+    fingerprint: String, // 👈 from frontend trust dialog
 ) -> Result<(), String> {
     let plink = resolve_plink_path(&app)?;
 
-    // 🔐 Phase 1 — Validate credentials
-    probe_ssh_auth(&plink, &ip, &user, &password)?;
+    // 🔐 Phase 1 — verify credentials with trusted fingerprint
+    probe_ssh_auth(&plink, &ip, &user, &password, &fingerprint)?;
 
-    // 🖥️ Phase 2 — Interactive SSH
+    println!("[SSH] Starting interactive session");
+
     let mut child = Command::new(&plink)
         .arg("-ssh")
         .arg("-t")
+        .arg("-hostkey")
+        .arg(&fingerprint)
         .arg("-pw")
         .arg(password)
         .arg(format!("{}@{}", user, ip))
@@ -105,7 +146,7 @@ fn start_ssh_session(
 
     let app_handle = app.clone();
 
-    // 🔥 Stream SSH output to frontend
+    // 🔥 Stream SSH output
     thread::spawn(move || {
         let mut buf = [0u8; 1024];
         loop {
@@ -158,7 +199,7 @@ fn close_ssh_session(state: State<AppState>) {
 }
 
 /* =========================
-   PLINK PATH RESOLUTION
+   PLINK PATH
    ========================= */
 
 fn resolve_plink_path(app: &AppHandle) -> Result<String, String> {
@@ -191,6 +232,7 @@ fn main() {
             session: Arc::new(Mutex::new(None)),
         })
         .invoke_handler(tauri::generate_handler![
+            probe_ssh_host,
             start_ssh_session,
             send_ssh_input,
             close_ssh_session

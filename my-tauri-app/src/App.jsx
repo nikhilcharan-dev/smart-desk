@@ -57,9 +57,11 @@ export default function App() {
 
     const disconnect = async () => {
         await invoke("close_ssh_session");
-        setConnected(false);
         xtermRef.current?.dispose();
+        xtermRef.current = null;
+        setConnected(false);
     };
+
 
     if (!connected) {
         return (
