@@ -1,0 +1,102 @@
+/* =============================================
+   TerminalPane — Premium Terminal Session
+   ============================================= */
+
+.tp {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    width: 100%;
+    min-width: 0;
+    min-height: 0;
+    background: #0a0e17;
+    transition: all 0.2s ease;
+}
+
+.tp--active {
+    /* Subtle glow when active */
+}
+
+/* =============================================
+   Header
+   ============================================= */
+
+.tp__header {
+    height: 30px;
+    background: var(--th-bg-secondary, #111827);
+    border-bottom: 1px solid var(--th-border, rgba(56, 78, 112, 0.35));
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 12px;
+    flex-shrink: 0;
+}
+
+.tp__header-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.tp__indicator {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--th-success, #10b981);
+    box-shadow: 0 0 6px rgba(16, 185, 129, 0.4);
+    flex-shrink: 0;
+}
+
+.tp__title {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--th-text-secondary, #8b98b0);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.tp__session-id {
+    font-size: 10px;
+    color: var(--th-text-muted, #5a6780);
+    font-family: 'JetBrains Mono', monospace;
+    background: var(--th-bg-surface, #1a2233);
+    padding: 2px 8px;
+    border-radius: 4px;
+}
+
+/* =============================================
+   Terminal Body
+   ============================================= */
+
+.tp__body {
+    flex: 1;
+    min-height: 0;
+    padding: 6px 0 0 8px;
+    background: #0a0e17;
+}
+
+/* XTerm overrides */
+.tp .xterm {
+    height: 100%;
+}
+
+.tp .xterm-viewport {
+    background-color: transparent !important;
+}
+
+.tp .xterm-viewport::-webkit-scrollbar {
+    width: 5px;
+}
+
+.tp .xterm-viewport::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.tp .xterm-viewport::-webkit-scrollbar-thumb {
+    background: rgba(56, 78, 112, 0.3);
+    border-radius: 3px;
+}
+
+.tp .xterm-viewport::-webkit-scrollbar-thumb:hover {
+    background: rgba(56, 78, 112, 0.5);
+}

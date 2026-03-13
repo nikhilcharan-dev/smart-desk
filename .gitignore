@@ -1,0 +1,35 @@
+# IDE
+.vscode
+.idea
+.agent
+.claude
+
+# Dependencies
+node_modules/
+my-tauri-app/node_modules/
+
+# Build output
+dist/
+my-tauri-app/dist/
+my-tauri-app/src-tauri/target/
+my-tauri-app/src-tauri/gen/
+
+# Environment & secrets
+.env
+.env.*
+*.pem
+*.key
+*.p12
+credentials.json
+
+# OS files
+Thumbs.db
+.DS_Store
+Desktop.ini
+
+# Logs
+*.log
+npm-debug.log*
+
+# Tauri
+WixTools/

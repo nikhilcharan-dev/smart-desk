@@ -1,0 +1,312 @@
+/* =============================================
+   ServerGrid — Premium Card Grid
+   ============================================= */
+
+.sg-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 14px;
+    padding: 16px 20px;
+    align-content: start;
+}
+
+/* Empty State */
+.sg-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    min-height: 200px;
+    color: var(--th-text-muted, #5a6780);
+    text-align: center;
+    gap: 8px;
+}
+
+.sg-empty p {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--th-text-secondary, #8b98b0);
+}
+
+.sg-empty span {
+    font-size: 12px;
+}
+
+/* =============================================
+   Server Card
+   ============================================= */
+
+.sg-card {
+    position: relative;
+    background: var(--th-bg-secondary, #111827);
+    border: 1px solid var(--th-border, rgba(56, 78, 112, 0.35));
+    border-radius: var(--th-radius-md, 10px);
+    padding: 14px 16px;
+    cursor: pointer;
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    overflow: hidden;
+}
+
+.sg-card::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    opacity: 0;
+    transition: opacity 0.25s;
+    pointer-events: none;
+}
+
+.sg-card:hover {
+    border-color: var(--th-border-hover, rgba(99, 130, 180, 0.5));
+    transform: translateY(-2px);
+    box-shadow: var(--th-shadow, 0 4px 20px rgba(0, 0, 0, 0.35));
+}
+
+.sg-card:hover::before {
+    opacity: 1;
+}
+
+/* Status-specific card styles */
+.sg-card--connected {
+    border-color: rgba(16, 185, 129, 0.3);
+}
+
+.sg-card--connected::before {
+    background: var(--th-success-glow, rgba(16, 185, 129, 0.06));
+    opacity: 1;
+}
+
+.sg-card--connecting {
+    border-color: rgba(59, 130, 246, 0.3);
+    cursor: wait;
+}
+
+.sg-card--connecting::before {
+    background: var(--th-accent-glow, rgba(59, 130, 246, 0.06));
+    opacity: 1;
+}
+
+.sg-card--failed {
+    border-color: rgba(239, 68, 68, 0.3);
+}
+
+.sg-card--failed::before {
+    background: var(--th-danger-glow, rgba(239, 68, 68, 0.06));
+    opacity: 1;
+}
+
+/* =============================================
+   Status Indicator Dot
+   ============================================= */
+
+.sg-card__indicator {
+    position: absolute;
+    top: 16px;
+    right: 16px;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--th-text-muted, #5a6780);
+    transition: all 0.3s;
+}
+
+.sg-card__indicator--connected {
+    background: var(--th-success, #10b981);
+    box-shadow: 0 0 8px rgba(16, 185, 129, 0.5);
+    animation: sg-pulse 2s infinite;
+}
+
+.sg-card__indicator--connecting {
+    background: var(--th-accent, #3b82f6);
+    box-shadow: 0 0 8px rgba(59, 130, 246, 0.5);
+    animation: sg-pulse 1s infinite;
+}
+
+.sg-card__indicator--failed {
+    background: var(--th-danger, #ef4444);
+    box-shadow: 0 0 8px rgba(239, 68, 68, 0.5);
+}
+
+@keyframes sg-pulse {
+
+    0%,
+    100% {
+        opacity: 1;
+    }
+
+    50% {
+        opacity: 0.4;
+    }
+}
+
+/* =============================================
+   Card Content
+   ============================================= */
+
+.sg-card__main {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.sg-card__avatar {
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 15px;
+    color: #fff;
+    flex-shrink: 0;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.sg-card__info {
+    min-width: 0;
+}
+
+.sg-card__name {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--th-text-primary, #e8edf5);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    line-height: 1.3;
+}
+
+.sg-card__host {
+    font-size: 11px;
+    color: var(--th-text-muted, #5a6780);
+    font-family: 'JetBrains Mono', monospace;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Tags */
+.sg-card__tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin-bottom: 12px;
+}
+
+.sg-card__tag {
+    background: var(--th-bg-surface, #1a2233);
+    color: var(--th-text-muted, #5a6780);
+    font-size: 10px;
+    padding: 2px 7px;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    border: 1px solid var(--th-border, rgba(56, 78, 112, 0.25));
+}
+
+/* Footer */
+.sg-card__footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-top: 10px;
+    border-top: 1px solid var(--th-border, rgba(56, 78, 112, 0.2));
+}
+
+.sg-card__meta {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 10px;
+    color: var(--th-text-muted, #5a6780);
+}
+
+/* Status Badge */
+.sg-card__status {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 3px 8px;
+    border-radius: 5px;
+    transition: all 0.2s;
+}
+
+.sg-card__status--idle {
+    color: var(--th-text-secondary, #8b98b0);
+    background: var(--th-bg-surface, #1a2233);
+}
+
+.sg-card__status--connecting {
+    color: var(--th-accent, #3b82f6);
+    background: var(--th-accent-glow, rgba(59, 130, 246, 0.1));
+}
+
+.sg-card__status--failed {
+    color: var(--th-danger, #ef4444);
+    background: var(--th-danger-glow, rgba(239, 68, 68, 0.1));
+}
+
+/* Disconnect Button */
+.sg-card__action {
+    background: transparent;
+    border: 1px solid var(--th-border, rgba(56, 78, 112, 0.35));
+    border-radius: 5px;
+    padding: 4px 8px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    transition: all 0.2s;
+}
+
+.sg-card__action--disconnect {
+    color: var(--th-text-muted, #5a6780);
+}
+
+.sg-card__action--disconnect:hover {
+    color: var(--th-danger, #ef4444);
+    border-color: rgba(239, 68, 68, 0.4);
+    background: var(--th-danger-glow, rgba(239, 68, 68, 0.1));
+}
+
+/* Spin animation */
+.sg-spin {
+    animation: sg-spin-anim 1s linear infinite;
+}
+
+@keyframes sg-spin-anim {
+    from {
+        transform: rotate(0deg);
+    }
+
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+/* =============================================
+   Responsive
+   ============================================= */
+
+@media (max-width: 768px) {
+    .sg-grid {
+        grid-template-columns: 1fr;
+        padding: 12px;
+        gap: 10px;
+    }
+}
+
+@media (max-width: 480px) {
+    .sg-card__tags {
+        display: none;
+    }
+}

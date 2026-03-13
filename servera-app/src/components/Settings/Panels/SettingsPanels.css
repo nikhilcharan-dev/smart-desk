@@ -1,0 +1,291 @@
+/* General Settings Panel Styles */
+.sh-panel {
+    padding: 24px 32px;
+    color: #e5e7eb;
+    max-width: 900px;
+    margin: 0 auto;
+}
+
+.sh-panel-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 24px;
+}
+
+.sh-panel-header h2 {
+    margin: 0 0 4px 0;
+    font-size: 20px;
+    font-weight: 600;
+}
+
+.sh-panel-subtitle {
+    margin: 0;
+    font-size: 13px;
+    color: #9ca3af;
+}
+
+/* Common Components */
+.sh-card {
+    background: #11141d;
+    border: 1px solid #1f2532;
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 20px;
+}
+
+.sh-card h3 {
+    margin: 0 0 16px 0;
+    font-size: 15px;
+    font-weight: 600;
+    color: #d1d5db;
+}
+
+.sh-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16px;
+}
+
+.sh-card-header h3 {
+    margin: 0;
+}
+
+.sh-input-group {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 16px;
+}
+
+.sh-input-group.row {
+    flex-direction: row;
+}
+
+.sh-input {
+    flex: 1;
+    background: #0b0e14;
+    border: 1px solid #1f2532;
+    color: #e5e7eb;
+    padding: 10px 12px;
+    border-radius: 6px;
+    font-family: inherit;
+    font-size: 13px;
+    outline: none;
+    transition: border-color 0.2s;
+}
+
+.sh-input:focus {
+    border-color: #4f9cff;
+}
+
+.sh-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 10px 16px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    border: 1px solid transparent;
+    transition: all 0.2s;
+    background: #1f2532;
+    color: #e5e7eb;
+}
+
+.sh-btn:hover {
+    background: #2b3344;
+}
+
+.sh-btn.primary {
+    background: #3b82f6;
+    color: #fff;
+}
+
+.sh-btn.primary:hover {
+    background: #2563eb;
+}
+
+.sh-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.sh-action-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: #1f2532;
+    border: 1px solid transparent;
+    color: #d1d5db;
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.sh-action-btn:hover {
+    background: #2b3344;
+}
+
+/* Alert Boxes */
+.sh-alert {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px;
+    border-radius: 8px;
+    margin-bottom: 20px;
+    font-size: 13px;
+}
+
+.sh-alert.error {
+    background: rgba(239, 68, 68, 0.1);
+    border: 1px solid rgba(239, 68, 68, 0.2);
+    color: #ef4444;
+}
+
+/* Lists */
+.sh-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+.sh-list-item {
+    display: flex;
+    align-items: center;
+    background: #0b0e14;
+    border: 1px solid #1f2532;
+    border-radius: 8px;
+    padding: 12px 16px;
+    gap: 16px;
+    transition: border-color 0.2s;
+}
+
+.sh-list-item:hover {
+    border-color: #374151;
+}
+
+.sh-list-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 6px;
+    background: #1f2532;
+    color: #9ca3af;
+    flex-shrink: 0;
+}
+
+.sh-list-content {
+    flex: 1;
+    min-width: 0;
+}
+
+.sh-list-title {
+    font-weight: 500;
+    color: #f3f4f6;
+    margin-bottom: 4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.sh-list-desc {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: #9ca3af;
+}
+
+.sh-badge {
+    background: #1f2532;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 11px;
+    color: #d1d5db;
+}
+
+.sh-mono {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.sh-list-actions {
+    display: flex;
+    gap: 8px;
+    opacity: 0;
+    transition: opacity 0.2s;
+}
+
+.sh-list-item:hover .sh-list-actions {
+    opacity: 1;
+}
+
+.sh-icon-btn {
+    background: transparent;
+    border: none;
+    color: #9ca3af;
+    padding: 6px;
+    border-radius: 4px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+}
+
+.sh-icon-btn:hover {
+    background: #1f2532;
+    color: #e5e7eb;
+}
+
+.sh-icon-btn.danger:hover {
+    background: rgba(239, 68, 68, 0.1);
+    color: #ef4444;
+}
+
+/* Empty State */
+.sh-empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 40px 20px;
+    text-align: center;
+    color: #9ca3af;
+}
+
+.sh-empty-state p {
+    margin: 12px 0 0 0;
+    font-size: 13px;
+}
+
+/* Status Messages */
+.sh-status-message {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 8px;
+    font-size: 12px;
+}
+
+.sh-status-message.success {
+    color: #10b981;
+}
+
+.sh-status-message.error {
+    color: #ef4444;
+}

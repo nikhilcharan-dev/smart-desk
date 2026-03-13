@@ -1,0 +1,269 @@
+.analytics-container {
+    padding: 32px 40px;
+    height: 100%;
+    overflow-y: auto;
+    background: #0b0e14;
+    font-family: 'Inter', sans-serif;
+    color: #e5e7eb;
+}
+
+.ah-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 32px;
+}
+
+.ah-title {
+    margin: 0;
+    font-size: 24px;
+    font-weight: 700;
+    color: #fff;
+    letter-spacing: -0.02em;
+}
+
+.ah-subtitle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: #9ca3af;
+    font-size: 13px;
+    margin-top: 4px;
+}
+
+.ah-dot {
+    opacity: 0.5;
+    font-size: 10px;
+}
+
+.ah-refresh-btn {
+    background: #11141d;
+    border: 1px solid #1f2532;
+    color: #d1d5db;
+    padding: 10px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.ah-refresh-btn:hover:not(:disabled) {
+    background: #1f2532;
+    color: #fff;
+}
+
+.spinning {
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    from {
+        transform: rotate(0deg);
+    }
+
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+/* Quick Metrics Row */
+.ah-quick-metrics {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 20px;
+    margin-bottom: 24px;
+}
+
+.ah-metric-card {
+    background: #11141d;
+    border: 1px solid #1f2532;
+    border-radius: 12px;
+    padding: 20px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+}
+
+.ah-metric-icon {
+    width: 48px;
+    height: 48px;
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.ah-metric-info {
+    display: flex;
+    flex-direction: column;
+}
+
+.ah-metric-label {
+    font-size: 12px;
+    color: #9ca3af;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-weight: 600;
+    margin-bottom: 4px;
+}
+
+.ah-metric-val {
+    font-size: 22px;
+    font-weight: 700;
+    color: #fff;
+    font-family: 'JetBrains Mono', monospace;
+}
+
+.ah-net-pill {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: 'JetBrains Mono', monospace;
+}
+
+.ah-net-pill.dn {
+    color: #10b981;
+    background: rgba(16, 185, 129, 0.1);
+}
+
+.ah-net-pill.up {
+    color: #3b82f6;
+    background: rgba(59, 130, 246, 0.1);
+}
+
+/* Main Grid Layout */
+.ah-grid {
+    display: grid;
+    grid-template-columns: 2fr 1fr;
+    gap: 24px;
+}
+
+.ah-charts-col {
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+}
+
+.ah-side-col {
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+}
+
+/* Base Card Style */
+.ah-chart-card,
+.ah-side-card {
+    background: #11141d;
+    border: 1px solid #1f2532;
+    border-radius: 12px;
+    padding: 20px;
+}
+
+.ah-chart-card h3,
+.ah-side-card h3 {
+    margin: 0 0 16px 0;
+    font-size: 16px;
+    font-weight: 600;
+    color: #e5e7eb;
+}
+
+.ah-card-desc {
+    margin: -12px 0 16px 0;
+    font-size: 12px;
+    color: #9ca3af;
+}
+
+.ah-chart-wrapper {
+    width: 100%;
+    height: 250px;
+}
+
+/* Top Processes List */
+.ah-proc-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.ah-proc-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: #0b0e14;
+    border: 1px solid #1f2532;
+    padding: 10px 12px;
+    border-radius: 8px;
+}
+
+.ah-proc-name {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    color: #e5e7eb;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 120px;
+}
+
+.ah-proc-stats {
+    display: flex;
+    gap: 12px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+/* Disks (reused partials) */
+.disk-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+}
+
+/* Responsiveness */
+@media (max-width: 1024px) {
+    .ah-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+@media (max-width: 640px) {
+    .analytics-container {
+        padding: 20px;
+    }
+
+    .ah-header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 16px;
+    }
+}
+
+/* Skeletons */
+.skeleton {
+    background: #1f2532;
+    background-image: linear-gradient(90deg,
+            rgba(255, 255, 255, 0) 0,
+            rgba(255, 255, 255, 0.05) 20%,
+            rgba(255, 255, 255, 0) 40%,
+            rgba(255, 255, 255, 0));
+    background-size: 200px 100%;
+    background-repeat: no-repeat;
+    animation: shimmer 1.5s infinite linear;
+    border-radius: 4px;
+}
+
+@keyframes shimmer {
+    0% {
+        background-position: -200px 0;
+    }
+
+    100% {
+        background-position: calc(200px + 100%) 0;
+    }
+}

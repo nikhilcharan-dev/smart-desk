@@ -1,0 +1,160 @@
+/* =============================================
+   PaneManager — Tabbed Sessions
+   ============================================= */
+
+.pm {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+    background: var(--th-bg-primary, #0a0e17);
+}
+
+/* =============================================
+   Tab Bar
+   ============================================= */
+
+.pm__tabs {
+    display: flex;
+    align-items: center;
+    height: 36px;
+    background: var(--th-bg-secondary, #111827);
+    border-bottom: 1px solid var(--th-border, rgba(56, 78, 112, 0.35));
+    padding: 0 12px;
+    gap: 4px;
+    flex-shrink: 0;
+    overflow-x: auto;
+}
+
+.pm__tab-list {
+    display: flex;
+    gap: 2px;
+    flex: 1;
+    min-width: 0;
+    overflow-x: auto;
+}
+
+.pm__tab-list::-webkit-scrollbar {
+    display: none;
+}
+
+.pm__tab {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 10px;
+    font-size: 12px;
+    font-weight: 500;
+    font-family: inherit;
+    color: var(--th-text-muted, #5a6780);
+    background: transparent;
+    border: none;
+    border-radius: var(--th-radius-sm, 6px);
+    cursor: pointer;
+    transition: all 0.2s ease;
+    white-space: nowrap;
+    position: relative;
+}
+
+.pm__tab:hover {
+    color: var(--th-text-secondary, #8b98b0);
+    background: var(--th-bg-surface, #1a2233);
+}
+
+.pm__tab--active {
+    color: var(--th-text-primary, #e8edf5);
+    background: var(--th-bg-surface, #1a2233);
+}
+
+.pm__tab--active::after {
+    content: '';
+    position: absolute;
+    bottom: -1px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 60%;
+    height: 2px;
+    background: var(--th-accent, #3b82f6);
+    border-radius: 2px 2px 0 0;
+}
+
+.pm__tab-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--th-success, #10b981);
+    flex-shrink: 0;
+    box-shadow: 0 0 4px rgba(16, 185, 129, 0.4);
+}
+
+.pm__tab-label {
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.pm__tab-close {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    border-radius: 3px;
+    opacity: 0;
+    transition: all 0.15s;
+    color: var(--th-text-muted, #5a6780);
+}
+
+.pm__tab:hover .pm__tab-close {
+    opacity: 1;
+}
+
+.pm__tab-close:hover {
+    background: var(--th-danger, #ef4444);
+    color: #fff;
+}
+
+.pm__tab-meta {
+    font-size: 10px;
+    color: var(--th-text-muted, #5a6780);
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    padding-left: 8px;
+    border-left: 1px solid var(--th-border, rgba(56, 78, 112, 0.25));
+}
+
+/* =============================================
+   Content Area
+   ============================================= */
+
+.pm__content {
+    flex: 1;
+    min-height: 0;
+    position: relative;
+}
+
+.pm__pane {
+    display: flex;
+    height: 100%;
+    width: 100%;
+}
+
+/* =============================================
+   Responsive
+   ============================================= */
+
+@media (max-width: 768px) {
+    .pm__tabs {
+        padding: 0 8px;
+    }
+
+    .pm__tab-meta {
+        display: none;
+    }
+
+    .pm__tab-label {
+        max-width: 80px;
+    }
+}

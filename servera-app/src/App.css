@@ -1,0 +1,406 @@
+.app-shell {
+  height: 100vh;
+  display: flex;
+  background: #0b0e14;
+  overflow: hidden;
+  font-family: 'Inter', sans-serif;
+}
+
+.drag-underlay {
+  position: fixed;
+  inset: 0;
+  z-index: 8000;
+  pointer-events: none;
+  background: transparent;
+  cursor: grabbing;
+  display: none;
+}
+
+body.dnd-active .drag-underlay {
+  display: block;
+  pointer-events: auto;
+}
+
+.app-sidebar {
+  width: 68px;
+  background: #080a0f;
+  border-right: 1px solid #1f2532;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 16px 0;
+  z-index: 10;
+}
+
+.sidebar-icon,
+.sidebar-spacer,
+.sidebar-icon.danger {
+  pointer-events: auto;
+  /* Keep UI interactive */
+}
+
+.sidebar-icon {
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 16px;
+  border-radius: 12px;
+  cursor: pointer;
+  font-size: 20px;
+  color: #6b7280;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  position: relative;
+}
+
+.sidebar-icon:hover {
+  background: #1c2230;
+  color: #e5e7eb;
+  transform: translateY(-1px);
+}
+
+.sidebar-icon[data-active="true"] {
+  background: #1c2230;
+  color: #4f9cff;
+}
+
+.sidebar-icon[data-active="true"]::before {
+  content: '';
+  position: absolute;
+  left: -16px;
+  height: 24px;
+  width: 4px;
+  background: #4f9cff;
+  border-radius: 0 4px 4px 0;
+}
+
+.sidebar-spacer {
+  flex: 1;
+}
+
+.sidebar-icon.danger {
+  color: #ef4444;
+}
+
+.sidebar-icon.danger:hover {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ff6b6b;
+}
+
+.app-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  position: relative;
+  background: #0b0e14;
+}
+
+.view-container {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  position: relative;
+}
+
+/* Terminal Drawer */
+.terminal-drawer {
+  background: #0b0e14;
+  display: flex;
+  flex-direction: column;
+  transition: height 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  border-top: 1px solid #1f2532;
+  box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.3);
+  z-index: 20;
+}
+
+.drawer-handle,
+.terminal-container {
+  pointer-events: auto;
+  /* Keep UI interactive */
+}
+
+.terminal-drawer.open {
+  height: 40%;
+}
+
+/* ═══════════════════════════════════════
+   SMART TERMINAL LAYOUT MODES
+   ═══════════════════════════════════════ */
+
+/* ── Side-by-Side (default) ── */
+.smart-terminal-layout.side-by-side {
+  flex-direction: row;
+}
+
+.smart-terminal-layout.side-by-side .terminal-drawer {
+  order: -1;
+  border-top: none;
+  border-right: 1px solid #1f2532;
+  border-bottom: none;
+  box-shadow: 4px 0 20px rgba(0, 0, 0, 0.3);
+}
+
+.smart-terminal-layout.side-by-side .view-container {
+  order: 1;
+}
+
+/* ── Stacked ── */
+.smart-terminal-layout.stacked {
+  flex-direction: column;
+}
+
+.smart-terminal-layout.stacked .terminal-drawer {
+  order: -1;
+  border-top: none;
+  border-bottom: 1px solid #1f2532;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+}
+
+.smart-terminal-layout.stacked .view-container {
+  order: 1;
+}
+
+/* Both modes: remove fixed heights when inline flex handles sizing */
+.smart-terminal-layout .terminal-drawer.open.smart-terminal-mode {
+  height: auto;
+}
+
+.smart-terminal-layout .view-container {
+  overflow: hidden;
+}
+
+.terminal-drawer.closed {
+  height: 36px;
+}
+
+.drawer-handle {
+  height: 36px;
+  background: #0f1219;
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 13px;
+  color: #9ca3af;
+  border-bottom: 1px solid #1f2532;
+  transition: background 0.2s;
+}
+
+.drawer-handle:hover {
+  background: #1c2230;
+  color: #fff;
+}
+
+.handle-title {
+  font-weight: 600;
+  margin-right: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.handle-status {
+  color: #4b5563;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  background: #1f2937;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.handle-live-badge {
+  font-size: 9px;
+  font-weight: 700;
+  color: #3fb950;
+  background: rgba(63, 185, 80, 0.15);
+  padding: 1px 6px;
+  border-radius: 8px;
+  letter-spacing: 0.08em;
+  animation: livePulse 2s ease-in-out infinite;
+}
+
+@keyframes livePulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+/* Smart Terminal mode: non-collapsible drawer handle */
+.smart-terminal-mode .drawer-handle {
+  cursor: default;
+  border-bottom-color: #238636;
+}
+
+/* ── Draggable Split Resizer ── */
+.split-resizer {
+  flex-shrink: 0;
+  background: #1f2532;
+  transition: background 0.15s;
+  z-index: 25;
+  position: relative;
+}
+
+.split-resizer:hover,
+.split-resizer:active {
+  background: #58a6ff;
+}
+
+/* Stacked: horizontal bar, drags vertically */
+.split-resizer.stacked {
+  order: 0;
+  height: 5px;
+  width: 100%;
+  cursor: row-resize;
+}
+
+/* Side-by-side: vertical bar, drags horizontally */
+.split-resizer.side-by-side {
+  order: 0;
+  width: 5px;
+  height: 100%;
+  cursor: col-resize;
+}
+
+/* Expand hit area with pseudo-element */
+.split-resizer::after {
+  content: '';
+  position: absolute;
+}
+
+.split-resizer.stacked::after {
+  left: 0;
+  right: 0;
+  top: -4px;
+  bottom: -4px;
+}
+
+.split-resizer.side-by-side::after {
+  top: 0;
+  bottom: 0;
+  left: -4px;
+  right: -4px;
+}
+
+.terminal-container {
+  flex: 1;
+  background: #0b0e14;
+  padding: 4px 0 0 4px;
+}
+
+/* Loading Overlay */
+.loading-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(11, 14, 20, 0.9);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  backdrop-filter: blur(8px);
+}
+
+.spinner {
+  width: 60px;
+  height: 60px;
+  border: 4px solid rgba(79, 156, 255, 0.1);
+  border-left-color: #4f9cff;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  margin-bottom: 24px;
+  box-shadow: 0 0 20px rgba(79, 156, 255, 0.2);
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.loading-text {
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: #ffffff;
+  margin-bottom: 8px;
+  letter-spacing: 0.5px;
+}
+
+.loading-subtext {
+  font-size: 0.9rem;
+  color: #8c92a5;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.global-cursor-tracker {
+  position: fixed;
+  pointer-events: none;
+  background: rgba(59, 130, 246, 0.9);
+  color: white;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 600;
+  z-index: 10000;
+  white-space: nowrap;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+/* ========================================
+   MOBILE RESPONSIVENESS (768px and below)
+   ======================================== */
+
+@media (max-width: 768px) {
+  .app-shell {
+    flex-direction: column-reverse;
+    /* Sidebar moves to bottom */
+  }
+
+  .app-sidebar {
+    width: 100%;
+    height: 60px;
+    flex-direction: row;
+    border-right: none;
+    border-top: 1px solid #1f2532;
+    padding: 0 16px;
+    justify-content: space-around;
+  }
+
+  .sidebar-icon {
+    margin-bottom: 0;
+    width: 40px;
+    height: 40px;
+  }
+
+  .sidebar-icon[data-active="true"]::before {
+    left: 50%;
+    bottom: -8px;
+    top: auto;
+    width: 24px;
+    height: 4px;
+    transform: translateX(-50%);
+    border-radius: 4px 4px 0 0;
+  }
+
+  .sidebar-spacer {
+    display: none;
+  }
+
+  .app-main {
+    flex: 1;
+    height: calc(100vh - 60px);
+  }
+
+  /* Adjust terminal drawer for mobile */
+  .terminal-drawer.open {
+    height: 60%;
+    /* More space for terminal when open on mobile */
+  }
+}

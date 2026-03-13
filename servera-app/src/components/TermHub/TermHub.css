@@ -1,0 +1,320 @@
+/* =============================================
+   TermHub — Premium Design System
+   ============================================= */
+
+.termhub {
+    --th-bg-primary: #0a0e17;
+    --th-bg-secondary: #111827;
+    --th-bg-surface: #1a2233;
+    --th-bg-elevated: #1f2b3d;
+    --th-border: rgba(56, 78, 112, 0.35);
+    --th-border-hover: rgba(99, 130, 180, 0.5);
+    --th-text-primary: #e8edf5;
+    --th-text-secondary: #8b98b0;
+    --th-text-muted: #5a6780;
+    --th-accent: #3b82f6;
+    --th-accent-glow: rgba(59, 130, 246, 0.15);
+    --th-success: #10b981;
+    --th-success-glow: rgba(16, 185, 129, 0.12);
+    --th-danger: #ef4444;
+    --th-danger-glow: rgba(239, 68, 68, 0.12);
+    --th-warning: #f59e0b;
+    --th-radius-sm: 6px;
+    --th-radius-md: 10px;
+    --th-radius-lg: 14px;
+    --th-shadow: 0 4px 20px rgba(0, 0, 0, 0.35);
+    --th-transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    background: var(--th-bg-primary);
+    color: var(--th-text-primary);
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    overflow: hidden;
+}
+
+/* Light mode */
+@media (prefers-color-scheme: light) {
+    .termhub {
+        --th-bg-primary: #f5f7fa;
+        --th-bg-secondary: #ffffff;
+        --th-bg-surface: #f0f2f5;
+        --th-bg-elevated: #e8edf2;
+        --th-border: rgba(0, 0, 0, 0.08);
+        --th-border-hover: rgba(0, 0, 0, 0.15);
+        --th-text-primary: #111827;
+        --th-text-secondary: #6b7280;
+        --th-text-muted: #9ca3af;
+        --th-accent: #2563eb;
+        --th-accent-glow: rgba(37, 99, 235, 0.08);
+        --th-success-glow: rgba(16, 185, 129, 0.08);
+        --th-danger-glow: rgba(239, 68, 68, 0.08);
+        --th-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+    }
+}
+
+/* =============================================
+   Header
+   ============================================= */
+
+.termhub__header {
+    height: 52px;
+    padding: 0 20px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    background: var(--th-bg-secondary);
+    border-bottom: 1px solid var(--th-border);
+    flex-shrink: 0;
+    z-index: 10;
+}
+
+.termhub__header-left {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+}
+
+.termhub__title-group {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+}
+
+.termhub__title {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    color: var(--th-text-primary);
+    white-space: nowrap;
+}
+
+.termhub__stats {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+}
+
+.termhub__stat {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    color: var(--th-success);
+    font-weight: 500;
+}
+
+.termhub__stat.muted {
+    color: var(--th-text-muted);
+}
+
+.termhub__stat-divider {
+    color: var(--th-text-muted);
+}
+
+.termhub__header-center {
+    flex: 1;
+    display: flex;
+    justify-content: center;
+    max-width: 320px;
+    margin: 0 auto;
+}
+
+.termhub__search {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    background: var(--th-bg-primary);
+    border: 1px solid var(--th-border);
+    border-radius: var(--th-radius-md);
+    padding: 0 12px;
+    transition: var(--th-transition);
+}
+
+.termhub__search:focus-within {
+    border-color: var(--th-accent);
+    box-shadow: 0 0 0 3px var(--th-accent-glow);
+}
+
+.termhub__search-icon {
+    color: var(--th-text-muted);
+    flex-shrink: 0;
+}
+
+.termhub__search-input {
+    flex: 1;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: var(--th-text-primary);
+    font-size: 13px;
+    padding: 7px 0;
+    font-family: inherit;
+}
+
+.termhub__search-input::placeholder {
+    color: var(--th-text-muted);
+}
+
+.termhub__header-right {
+    display: flex;
+    gap: 6px;
+}
+
+/* =============================================
+   Buttons
+   ============================================= */
+
+.termhub__btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 7px 12px;
+    font-size: 13px;
+    font-weight: 500;
+    font-family: inherit;
+    border-radius: var(--th-radius-sm);
+    cursor: pointer;
+    transition: var(--th-transition);
+    border: 1px solid transparent;
+    white-space: nowrap;
+}
+
+.termhub__btn--ghost {
+    background: transparent;
+    color: var(--th-text-secondary);
+    border-color: transparent;
+}
+
+.termhub__btn--ghost:hover {
+    background: var(--th-bg-surface);
+    color: var(--th-text-primary);
+}
+
+.termhub__btn--primary {
+    background: var(--th-accent);
+    color: #fff;
+    border: none;
+}
+
+.termhub__btn--primary:hover {
+    background: #2563eb;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
+}
+
+/* =============================================
+   Body Layout
+   ============================================= */
+
+.termhub__body {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+}
+
+.termhub__servers {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    transition: flex 0.3s ease;
+}
+
+.termhub__servers--compact {
+    flex: 0 0 auto;
+    max-height: 220px;
+    min-height: 140px;
+    border-bottom: 1px solid var(--th-border);
+}
+
+.termhub__sessions {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+/* =============================================
+   Focus Mode
+   ============================================= */
+
+.termhub--focus .termhub__body {
+    height: 100vh;
+}
+
+.termhub__exit-focus {
+    position: absolute;
+    top: 16px;
+    right: 16px;
+    z-index: 1000;
+    background: var(--th-bg-elevated);
+    backdrop-filter: blur(12px);
+    border: 1px solid var(--th-border);
+    color: var(--th-text-secondary);
+    padding: 6px 12px;
+    border-radius: var(--th-radius-sm);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    font-family: inherit;
+    cursor: pointer;
+    transition: var(--th-transition);
+    opacity: 0.4;
+}
+
+.termhub__exit-focus:hover {
+    opacity: 1;
+    color: var(--th-text-primary);
+    background: var(--th-bg-surface);
+}
+
+/* =============================================
+   Scrollbar
+   ============================================= */
+
+.termhub ::-webkit-scrollbar {
+    width: 6px;
+}
+
+.termhub ::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.termhub ::-webkit-scrollbar-thumb {
+    background: var(--th-border);
+    border-radius: 3px;
+}
+
+.termhub ::-webkit-scrollbar-thumb:hover {
+    background: var(--th-text-muted);
+}
+
+/* =============================================
+   Responsive
+   ============================================= */
+
+@media (max-width: 768px) {
+    .termhub__header {
+        padding: 0 12px;
+        gap: 8px;
+    }
+
+    .termhub__header-center {
+        display: none;
+    }
+
+    .termhub__stats {
+        display: none;
+    }
+
+    .termhub__servers--compact {
+        max-height: 180px;
+    }
+}
