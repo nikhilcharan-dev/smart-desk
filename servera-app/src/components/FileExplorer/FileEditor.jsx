@@ -39,16 +39,41 @@ export default function FileEditor({ file, mode, onClose, onSaveSuccess }) {
         const loadFile = async () => {
             setLoading(true);
             setError(null);
+            
+            // Set a safety timeout to prevent infinite loading
+            const timeoutPromise = new Promise((_, reject) => 
+                setTimeout(() => reject(new Error("Request timed out (30s). The file might be too large or the connection is slow.")), 30000)
+            );
+
             try {
                 const command = mode === 'sftp' ? "sftp_read" : "local_read_file";
                 const args = mode === 'sftp' ? { sessionId: MAIN_SESSION_ID, path: file.path } : { path: file.path };
-                const bytes = await invoke(command, args);
+                
+                console.log(`[FileEditor] Loading ${file.path} via ${command}...`);
+                
+                // Race between the invoke and the timeout
+                const bytes = await Promise.race([
+                    invoke(command, args),
+                    timeoutPromise
+                ]);
+
+                if (!bytes) {
+                    throw new Error("No data received from file");
+                }
+
+                console.log(`[FileEditor] Received ${bytes.length} bytes for ${file.name}`);
+                
+                // Safety check for binary files or very large files
+                if (bytes.length > 5 * 1024 * 1024) {
+                    throw new Error("File is too large (>5MB) to open in the editor.");
+                }
+
                 const text = new TextDecoder().decode(new Uint8Array(bytes));
                 setContent(text);
                 setLanguage(detectLanguage(file.name));
             } catch (err) {
                 console.error("Failed to load file:", err);
-                setError(err.toString());
+                setError(err.message || err.toString());
             } finally {
                 setLoading(false);
             }

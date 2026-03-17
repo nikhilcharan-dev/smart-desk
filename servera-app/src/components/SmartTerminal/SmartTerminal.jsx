@@ -4,7 +4,8 @@ import { listen } from "@tauri-apps/api/event";
 import {
     Send, X, Loader2, Copy, Sparkles, RotateCcw,
     CheckCircle2, Circle, AlertCircle, Play, StopCircle,
-    Pencil, Trash2, ChevronRight, Bot, Columns2, Rows2
+    Pencil, Trash2, ChevronRight, Bot, Columns2, Rows2,
+    PlusCircle, MessageSquare, History, PanelLeftClose, PanelLeftOpen
 } from "lucide-react";
 import { MAIN_SESSION_ID } from "../../utils/terminal";
 import "./SmartTerminal.css";
@@ -64,6 +65,7 @@ export default function SmartTerminal({ xtermRef, onClose, layout, onLayoutChang
     const [timeline, setTimeline] = useState([]); // Array of timeline entries
     const [aiLoading, setAiLoading] = useState(false);
     const [streamBuffer, setStreamBuffer] = useState("");
+    const [detectedError, setDetectedError] = useState(null); // { message, type }
 
     // Execution state
     const [executingPlanIdx, setExecutingPlanIdx] = useState(-1); // Which timeline plan is executing
@@ -78,19 +80,84 @@ export default function SmartTerminal({ xtermRef, onClose, layout, onLayoutChang
 
     // Auto-scroll
     const timelineEndRef = useRef(null);
+
+    // Sessions management
+    const [sessions, setSessions] = useState([]);
+    const [activeSessionId, setActiveSessionId] = useState(null);
+    const [sidebarOpen, setSidebarOpen] = useState(true);
+
+    // Initial load from localStorage
+    useEffect(() => {
+        const savedSessions = localStorage.getItem("opspilot_sessions");
+        const lastActiveId = localStorage.getItem("opspilot_active_session_id");
+
+        let loadedSessions = [];
+        if (savedSessions) {
+            try {
+                loadedSessions = JSON.parse(savedSessions);
+                setSessions(loadedSessions);
+            } catch (e) {
+                console.error("Failed to parse saved sessions", e);
+            }
+        }
+
+        const defaultPrompt = "You are OpsPilot, an expert Linux/DevOps AI assistant integrated into an SSH terminal IDE.\n\nWhen the user gives you a task, generate a numbered command plan. Format each command EXACTLY as:\n## Command Plan\n1. `command here` - Brief description of what this does\n2. `another command` - Brief description of what this does\n\nWhen a command fails and you are asked to fix it, provide a new command plan for the fix.\nIf the user asks a general question (not a task), respond normally in markdown.\nAlways consider the terminal context provided. Wrap any standalone commands in ```bash blocks.";
+
+        // Handle migration from old single-session storage or empty state
+        if (loadedSessions.length === 0) {
+            const oldTimeline = localStorage.getItem("opspilot_timeline");
+            const oldHistory = localStorage.getItem("opspilot_chat_history");
+            
+            const newSession = {
+                id: Date.now().toString(),
+                title: "New Conversation",
+                timeline: oldTimeline ? JSON.parse(oldTimeline) : [],
+                chatHistory: oldHistory ? JSON.parse(oldHistory) : [{ role: "system", content: defaultPrompt }],
+                timestamp: new Date().toLocaleString()
+            };
+            
+            setSessions([newSession]);
+            setActiveSessionId(newSession.id);
+            setTimeline(newSession.timeline);
+            chatHistoryRef.current = newSession.chatHistory;
+        } else {
+            const activeId = lastActiveId || loadedSessions[0].id;
+            const active = loadedSessions.find(s => s.id === activeId) || loadedSessions[0];
+            setActiveSessionId(active.id);
+            setTimeline(active.timeline);
+            chatHistoryRef.current = active.chatHistory;
+        }
+
+        // Clean up old storage keys if they exist
+        localStorage.removeItem("opspilot_timeline");
+        localStorage.removeItem("opspilot_chat_history");
+    }, []);
+
+    // Save current active session data to sessions list and localStorage
+    useEffect(() => {
+        if (!activeSessionId) return;
+
+        setSessions(prev => {
+            const updated = prev.map(s => {
+                if (s.id === activeSessionId) {
+                    return {
+                        ...s,
+                        timeline: timeline,
+                        chatHistory: chatHistoryRef.current,
+                        timestamp: new Date().toLocaleString()
+                    };
+                }
+                return s;
+            });
+            localStorage.setItem("opspilot_sessions", JSON.stringify(updated));
+            localStorage.setItem("opspilot_active_session_id", activeSessionId);
+            return updated;
+        });
+    }, [timeline, activeSessionId]);
+
     useEffect(() => {
         timelineEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }, [timeline, aiLoading, streamBuffer]);
-
-    // Load system prompt on mount
-    useEffect(() => {
-        const defaultPrompt = "You are OpsPilot, an expert Linux/DevOps AI assistant integrated into an SSH terminal IDE.\n\nWhen the user gives you a task, generate a numbered command plan. Format each command EXACTLY as:\n## Command Plan\n1. `command here` - Brief description of what this does\n2. `another command` - Brief description of what this does\n\nWhen a command fails and you are asked to fix it, provide a new command plan for the fix.\nIf the user asks a general question (not a task), respond normally in markdown.\nAlways consider the terminal context provided. Wrap any standalone commands in ```bash blocks.";
-        invoke("load_ai_config").then(config => {
-            chatHistoryRef.current = [{ role: "system", content: config.system_prompt || defaultPrompt }];
-        }).catch(() => {
-            chatHistoryRef.current = [{ role: "system", content: defaultPrompt }];
-        });
-    }, []);
 
     // Listen for AI stream events
     useEffect(() => {
@@ -106,9 +173,9 @@ export default function SmartTerminal({ xtermRef, onClose, layout, onLayoutChang
                     // Finalize: parse plan or create message entry
                     const commands = parsePlan(prev);
                     if (commands) {
-                        setTimeline(t => [...t, { type: "plan", commands, rawContent: prev }]);
+                        setTimeline(t => [...t, { type: "plan", commands, rawContent: prev, timestamp: new Date().toLocaleTimeString() }]);
                     } else {
-                        setTimeline(t => [...t, { type: "ai_message", content: prev }]);
+                        setTimeline(t => [...t, { type: "ai_message", content: prev, timestamp: new Date().toLocaleTimeString() }]);
                     }
                     // Add to chat history
                     chatHistoryRef.current.push({ role: "assistant", content: prev });
@@ -121,6 +188,72 @@ export default function SmartTerminal({ xtermRef, onClose, layout, onLayoutChang
         return () => {
             if (unlistenChunk) unlistenChunk();
             if (unlistenDone) unlistenDone();
+        };
+    }, []);
+
+    // Monitor terminal output for errors with a rolling buffer
+    useEffect(() => {
+        let unlisten;
+        const bufferRef = { text: "" };
+        const bufferTimeoutRef = { current: null };
+
+        const errorPatterns = [
+            /bash: .+: command not found/i,
+            /Permission denied/i,
+            /Error: .+/i,
+            /fatal: .+/i,
+            /Traceback \(most recent call last\):/i,
+            /SyntaxError: .+/i,
+            /No such file or directory/i,
+            /git: '.+' is not a git command/i, // Added git specific pattern
+            /npm ERR!/i,
+            /node:.+ error/i,
+            /ModuleNotFoundError/i,
+            /ImportError/i
+        ];
+
+        const checkBufferForErrors = () => {
+            const output = bufferRef.text;
+            for (const pattern of errorPatterns) {
+                if (pattern.test(output)) {
+                    const match = output.match(pattern);
+                    setDetectedError({
+                        message: match[0].trim(),
+                        type: "terminal_error",
+                        timestamp: Date.now()
+                    });
+                    
+                    // Clear error suggestion after 15 seconds
+                    setTimeout(() => setDetectedError(prev => 
+                        (prev && Date.now() - prev.timestamp >= 14000) ? null : prev
+                    ), 15000);
+                    
+                    // Reset buffer after detection to avoid duplicate triggers
+                    bufferRef.text = "";
+                    break;
+                }
+            }
+        };
+
+        listen(`ssh-output:${MAIN_SESSION_ID}`, (event) => {
+            const chunk = event.payload;
+            bufferRef.text += chunk;
+
+            // Keep buffer size manageable (last 2000 chars)
+            if (bufferRef.text.length > 2000) {
+                bufferRef.text = bufferRef.text.slice(-2000);
+            }
+
+            // Debounce error checking to handle fragmented output
+            if (bufferTimeoutRef.current) clearTimeout(bufferTimeoutRef.current);
+            bufferTimeoutRef.current = setTimeout(() => {
+                checkBufferForErrors();
+            }, 300); // Wait for potential follow-up chunks
+        }).then(f => unlisten = f);
+
+        return () => {
+            if (unlisten) unlisten();
+            if (bufferTimeoutRef.current) clearTimeout(bufferTimeoutRef.current);
         };
     }, []);
 
@@ -182,24 +315,43 @@ export default function SmartTerminal({ xtermRef, onClose, layout, onLayoutChang
     const sendToAI = useCallback(async (userMessage, addToTimeline = true) => {
         if (aiLoading) return;
 
-        const termContext = getTerminalContext();
-        const fullPrompt = `Here is my current terminal screen context (last 100 lines):\n\n\`\`\`\n${termContext}\n\`\`\`\n\nUser: ${userMessage}`;
+        // Capture last 100 lines and strip ANSI codes for AI readability
+        const termContext = getTerminalContext().replace(
+            // eslint-disable-next-line no-control-regex
+            /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g,
+            ""
+        );
+        
+        const fullPrompt = `TERMINAL_SCREEN_CONTEXT:\n\`\`\`\n${termContext}\n\`\`\`\n\nUSER_REQUEST: ${userMessage}`;
 
         if (addToTimeline) {
-            setTimeline(prev => [...prev, { type: "prompt", text: userMessage }]);
+            setTimeline(prev => {
+                const next = [...prev, { type: "prompt", text: userMessage, timestamp: new Date().toLocaleTimeString() }];
+                
+                // Auto-title the session if it's the first message
+                const promptCount = next.filter(e => e.type === "prompt").length;
+                if (promptCount === 1) {
+                    setSessions(sArr => sArr.map(s => {
+                        if (s.id === activeSessionId) {
+                            return { ...s, title: userMessage.slice(0, 40) + (userMessage.length > 40 ? "..." : "") };
+                        }
+                        return s;
+                    }));
+                }
+                return next;
+            });
         }
 
         chatHistoryRef.current.push({ role: "user", content: fullPrompt });
         setAiLoading(true);
         setStreamBuffer("");
-
         try {
             await invoke("stream_ai_chat", { messages: chatHistoryRef.current });
         } catch (err) {
             setTimeline(prev => [...prev, { type: "ai_message", content: `Error: ${err}` }]);
             setAiLoading(false);
         }
-    }, [aiLoading, getTerminalContext]);
+    }, [aiLoading, getTerminalContext, activeSessionId]);
 
     const handleSend = () => {
         if (!prompt.trim() || aiLoading) return;
@@ -406,7 +558,58 @@ export default function SmartTerminal({ xtermRef, onClose, layout, onLayoutChang
         setTimeline([]);
         setPrompt("");
         setStreamBuffer("");
-        chatHistoryRef.current = [chatHistoryRef.current[0]]; // keep system prompt
+        // Keep only system prompt
+        const systemMsg = chatHistoryRef.current[0];
+        chatHistoryRef.current = [systemMsg];
+        localStorage.removeItem("opspilot_timeline");
+        localStorage.removeItem("opspilot_chat_history");
+    };
+
+    const handleNewChat = () => {
+        const defaultPrompt = chatHistoryRef.current[0].content;
+        const newSession = {
+            id: Date.now().toString(),
+            title: "New Conversation",
+            timeline: [],
+            chatHistory: [{ role: "system", content: defaultPrompt }],
+            timestamp: new Date().toLocaleString()
+        };
+
+        setSessions(prev => [newSession, ...prev]);
+        setActiveSessionId(newSession.id);
+        setTimeline([]);
+        chatHistoryRef.current = newSession.chatHistory;
+        setPrompt("");
+        setStreamBuffer("");
+    };
+
+    const switchSession = (sessionId) => {
+        if (sessionId === activeSessionId) return;
+        const session = sessions.find(s => s.id === sessionId);
+        if (session) {
+            setActiveSessionId(session.id);
+            setTimeline(session.timeline);
+            chatHistoryRef.current = session.chatHistory;
+        }
+    };
+
+    const deleteSession = (e, sessionId) => {
+        e.stopPropagation();
+        const filtered = sessions.filter(s => s.id !== sessionId);
+        
+        if (filtered.length === 0) {
+            // Always keep at least one session
+            handleNewChat();
+            return;
+        }
+
+        setSessions(filtered);
+        if (sessionId === activeSessionId) {
+            const nextSession = filtered[0];
+            setActiveSessionId(nextSession.id);
+            setTimeline(nextSession.timeline);
+            chatHistoryRef.current = nextSession.chatHistory;
+        }
     };
 
     /* ──── RENDER HELPERS ──── */
@@ -534,15 +737,64 @@ export default function SmartTerminal({ xtermRef, onClose, layout, onLayoutChang
 
     /* ──── MAIN RENDER ──── */
     return (
-        <div className="opspilot-container">
-            {/* Header */}
-            <div className="op-header">
-                <div className="op-header-left">
-                    <Sparkles size={18} color="#79c0ff" />
-                    <span className="op-title">OpsPilot</span>
-                    <span className="op-badge">AI Terminal</span>
+        <div className="opspilot-main-wrapper">
+            {/* Session Sidebar */}
+            <div className={`op-sidebar-panel ${sidebarOpen ? "open" : "collapsed"}`}>
+                <div className="op-sidebar-header">
+                    <History size={14} />
+                    <span>Chat History</span>
+                    <button className="op-sidebar-toggle" onClick={() => setSidebarOpen(false)}>
+                        <PanelLeftClose size={14} />
+                    </button>
                 </div>
+                <div className="op-session-list">
+                    <button className="op-new-btn-sidebar" onClick={handleNewChat}>
+                        <PlusCircle size={14} /> New Chat
+                    </button>
+                    {sessions.map(session => (
+                        <div 
+                            key={session.id} 
+                            className={`op-session-item ${session.id === activeSessionId ? "active" : ""}`}
+                            onClick={() => switchSession(session.id)}
+                        >
+                            <MessageSquare size={14} className="session-icon" />
+                            <div className="session-info">
+                                <span className="session-title">{session.title}</span>
+                                <span className="session-date">{session.timestamp}</span>
+                            </div>
+                            <button className="session-delete" onClick={(e) => deleteSession(e, session.id)}>
+                                <Trash2 size={12} />
+                            </button>
+                        </div>
+                    ))}
+                </div>
+            </div>
+
+            <div className="opspilot-container">
+                {/* Header */}
+                <div className="op-header">
+                    <div className="op-header-left">
+                        {!sidebarOpen && (
+                            <button className="op-sidebar-open-btn" onClick={() => setSidebarOpen(true)}>
+                                <PanelLeftOpen size={16} />
+                            </button>
+                        )}
+                        <Sparkles size={18} color="#79c0ff" />
+                        <span className="op-title">OpsPilot</span>
+                        <span className="op-badge">AI Terminal</span>
+                    </div>
                 <div className="op-header-right">
+                    <div className="op-layout-toggle" style={{ border: 'none' }}>
+                        <button
+                            className="op-layout-btn"
+                            style={{ background: '#1f6feb', color: 'white', borderRadius: 4, padding: '4px 10px' }}
+                            onClick={handleNewChat}
+                            title="New Chat"
+                        >
+                            <PlusCircle size={14} />
+                            <span style={{ marginLeft: 4, fontSize: 11, fontWeight: 700 }}>New Chat</span>
+                        </button>
+                    </div>
                     <div className="op-layout-toggle">
                         <button
                             className={`op-layout-btn ${layout === "side-by-side" ? "active" : ""}`}
@@ -595,7 +847,8 @@ export default function SmartTerminal({ xtermRef, onClose, layout, onLayoutChang
                             return (
                                 <div key={idx} className="op-timeline-entry prompt">
                                     <div className="op-prompt-bubble">
-                                        <span>{entry.text}</span>
+                                        <div className="op-bubble-content">{entry.text}</div>
+                                        {entry.timestamp && <div className="op-bubble-time">{entry.timestamp}</div>}
                                     </div>
                                 </div>
                             );
@@ -611,7 +864,12 @@ export default function SmartTerminal({ xtermRef, onClose, layout, onLayoutChang
                             return (
                                 <div key={idx} className="op-timeline-entry ai-message">
                                     <div className="op-ai-bubble">
-                                        <div className="op-ai-sender"><Bot size={12} /> OpsPilot</div>
+                                        <div className="op-ai-sender">
+                                            <div className="sender-info">
+                                                <Bot size={12} /> OpsPilot
+                                            </div>
+                                            {entry.timestamp && <span className="sender-time">{entry.timestamp}</span>}
+                                        </div>
                                         {renderAIMessage(entry.content)}
                                     </div>
                                 </div>
@@ -655,6 +913,31 @@ export default function SmartTerminal({ xtermRef, onClose, layout, onLayoutChang
                 <div ref={timelineEndRef} />
             </div>
 
+            {/* Error Detection Overlay/Suggestion */}
+            {detectedError && (
+                <div className="op-error-suggestion">
+                    <div className="op-suggestion-content">
+                        <AlertCircle size={16} className="text-red-400" />
+                        <div className="op-suggestion-text">
+                            <strong>Potential error detected:</strong>
+                            <span>{detectedError.message}</span>
+                        </div>
+                    </div>
+                    <div className="op-suggestion-actions">
+                        <button className="op-suggestion-btn secondary" onClick={() => setDetectedError(null)}>
+                            Ignore
+                        </button>
+                        <button className="op-suggestion-btn primary" onClick={() => {
+                            const msg = `I see a terminal error: "${detectedError.message}". Can you help me debug and fix it?`;
+                            setDetectedError(null);
+                            sendToAI(msg);
+                        }}>
+                            <Sparkles size={14} /> Debug with AI
+                        </button>
+                    </div>
+                </div>
+            )}
+
             {/* Input Bar */}
             <div className="op-input-bar">
                 <input
@@ -670,5 +953,6 @@ export default function SmartTerminal({ xtermRef, onClose, layout, onLayoutChang
                 </button>
             </div>
         </div>
+    </div>
     );
 }

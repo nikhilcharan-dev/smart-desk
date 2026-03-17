@@ -1006,7 +1006,7 @@ export const DownloadCTA = () => {
             </p>
 
             <div style={{ display: "flex", gap: "1.25rem", justifyContent: "center", flexWrap: "wrap", marginBottom: "2.5rem" }}>
-              <a href="/downloads/Servera_0.1.0_x64-setup.exe" download className="btn btn-download btn-lg">
+              <a href="/downloads/Servera.exe" download className="btn btn-download btn-lg">
                 <Monitor size={19} /> Download for Windows
               </a>
               <Link href="/download" className="btn btn-ghost btn-lg">

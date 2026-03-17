@@ -92,7 +92,7 @@ export default function DownloadPage() {
               </div>
 
               <a
-                href="/downloads/Servera_0.1.0_x64-setup.exe"
+                href="/downloads/Servera.exe"
                 download
                 className="btn btn-download"
                 style={{ width: "100%", padding: "1rem", fontSize: "1rem" }}
