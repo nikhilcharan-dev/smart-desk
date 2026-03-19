@@ -56,6 +56,10 @@ export class ParticlesSwarm {
         this._raf = requestAnimationFrame(this.animate);
         const time = this.clock.getElapsedTime() * this.speedMult;
 
+        // Slow left-right oscillation + 45° slant
+        this.scene.rotation.y = Math.sin(time * 0.05) * 0.4;
+        this.scene.rotation.z = Math.PI / 4;
+
         const PARAMS = { "phase": 42.95, "shock": 35, "drift": 1.2, "mass": 2.5, "turb": 1.4 };
         const addControl = (id, _l, _min, _max, val) => PARAMS[id] !== undefined ? PARAMS[id] : val;
         const count = this.count;
