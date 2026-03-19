@@ -14,6 +14,49 @@ import { ScrollTrigger } from "gsap/dist/ScrollTrigger";
 gsap.registerPlugin(ScrollTrigger);
 
 /* ═══════════════════════════════════════════
+   PARTICLE BACKGROUND (Supernova)
+═══════════════════════════════════════════ */
+export const ParticleBackground = () => {
+  const containerRef = useRef(null);
+  const swarmRef = useRef(null);
+
+  useEffect(() => {
+    let mounted = true;
+
+    import("@/lib/super_nova").then(({ ParticlesSwarm }) => {
+      if (!mounted || !containerRef.current) return;
+      swarmRef.current = new ParticlesSwarm(containerRef.current, 25000);
+    });
+
+    const onResize = () => {
+      if (swarmRef.current) swarmRef.current.resize();
+    };
+    window.addEventListener("resize", onResize);
+
+    return () => {
+      mounted = false;
+      window.removeEventListener("resize", onResize);
+      if (swarmRef.current) {
+        swarmRef.current.dispose();
+        swarmRef.current = null;
+      }
+    };
+  }, []);
+
+  return (
+    <div
+      ref={containerRef}
+      style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: -1,
+        pointerEvents: "none",
+      }}
+    />
+  );
+};
+
+/* ═══════════════════════════════════════════
    CURSOR SPOTLIGHT
 ═══════════════════════════════════════════ */
 export const CursorSpotlight = () => {
@@ -89,6 +132,7 @@ export const Navbar = () => {
           { label: "OpsPilot",     href: "#opspilot"     },
           { label: "How It Works", href: "#how-it-works" },
           { label: "Mobile",       href: "#mobile"       },
+          { label: "Feedback",     href: "/feedback"     },
         ].map(({ label, href }) => (
           <a key={label} href={href} className="link-hover"
             style={{ fontSize: "0.875rem", fontWeight: 500, color: "var(--text-2)", letterSpacing: "-0.01em" }}>

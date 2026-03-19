@@ -1,4 +1,5 @@
 import {
+  ParticleBackground,
   CursorSpotlight,
   Navbar,
   Hero,
@@ -15,6 +16,7 @@ import {
 export default function Home() {
   return (
     <main style={{ position: "relative", minHeight: "100vh" }}>
+      <ParticleBackground />
       <CursorSpotlight />
       <Navbar />
       <Hero />
