@@ -319,6 +319,15 @@ export default function DownloadPage() {
                   color="var(--cyan-2)"
                   bg="rgba(6,182,212,0.08)"
                 />
+                {/* Linux */}
+                <StatCell
+                  icon={<Globe size={16} />}
+                  label="Linux"
+                  total={counts.linux?.total || 0}
+                  today={counts.linux?.today || 0}
+                  color="var(--emerald)"
+                  bg="rgba(16,185,129,0.08)"
+                />
                 {/* iOS */}
                 <StatCell
                   icon={<Smartphone size={16} />}
@@ -355,7 +364,7 @@ export default function DownloadPage() {
               </div>
 
               <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem", marginBottom: "3rem" }}>
-                {["Native Windows desktop app", "AES-256 encrypted credential vault", "One-click installer (~82 MB)", "No account or internet required"].map((t, i) => (
+                {["Native Windows desktop app", "AES-256 encrypted credential vault", "One-click installer (~82 MB)", "No account required"].map((t, i) => (
                   <div key={i} style={{ display: "flex", alignItems: "center", gap: "0.6rem", fontSize: "0.875rem", color: "var(--text-2)" }}>
                     <CheckCircle size={14} style={{ color: "var(--emerald)", flexShrink: 0 }} />
                     {t}
@@ -453,6 +462,76 @@ export default function DownloadPage() {
               </a>
             </div>
 
+            {/* ── Linux — Available ── */}
+            <div className="glass card" style={{ padding: "3rem", display: "flex", flexDirection: "column", borderColor: "rgba(16,185,129,0.2)" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "2.5rem" }}>
+                <div style={{ background: "rgba(16,185,129,0.08)", width: 64, height: 64, borderRadius: 18, display: "flex", alignItems: "center", justifyContent: "center", border: "1px solid rgba(16,185,129,0.15)" }}>
+                  <Globe size={30} color="var(--emerald)" />
+                </div>
+                <span className="badge badge-g">
+                  <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--emerald)", display: "inline-block" }} />
+                  Available
+                </span>
+              </div>
+
+              <h2 style={{ fontSize: "2rem", marginBottom: "0.5rem" }}>Linux</h2>
+              <p style={{ color: "var(--text-2)", marginBottom: "0.5rem", fontSize: "0.9rem" }}>Ubuntu, Debian, Fedora & more (x64)</p>
+
+              <div className="mono" style={{ fontSize: "0.75rem", color: "var(--emerald)", marginBottom: "2.5rem", padding: "0.5rem 0.85rem", background: "rgba(16,185,129,0.06)", borderRadius: 8, display: "inline-block", alignSelf: "flex-start" }}>
+                v0.1.0
+              </div>
+
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem", marginBottom: "3rem" }}>
+                {["Native Linux desktop app", "AES-256 encrypted credential vault", ".deb & .AppImage packages", "No account required"].map((t, i) => (
+                  <div key={i} style={{ display: "flex", alignItems: "center", gap: "0.6rem", fontSize: "0.875rem", color: "var(--text-2)" }}>
+                    <CheckCircle size={14} style={{ color: "var(--emerald)", flexShrink: 0 }} />
+                    {t}
+                  </div>
+                ))}
+              </div>
+
+              <div style={{ background: "rgba(255,255,255,0.025)", borderRadius: 12, padding: "1rem 1.25rem", border: "1px solid var(--b0)", display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.75rem" }}>
+                <span style={{ fontSize: "0.82rem", color: "var(--text-3)" }}>
+                  Size: <b style={{ color: "var(--text-2)" }}>~14 MB (.deb) · ~84 MB (.AppImage)</b>
+                </span>
+                <div style={{ display: "flex", alignItems: "center", gap: "0.4rem", color: "var(--emerald)", fontSize: "0.72rem", fontWeight: 700, letterSpacing: "0.08em" }}>
+                  <ShieldCheck size={14} /> SIGNED BUILD
+                </div>
+              </div>
+
+              {/* Download count inline */}
+              {counts?.linux && (
+                <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "1rem", fontSize: "0.78rem", color: "var(--text-3)" }}>
+                  <BarChart2 size={13} />
+                  <span><b style={{ color: "var(--text-2)" }}>{counts.linux.total.toLocaleString()}</b> downloads</span>
+                  {counts.linux.today > 0 && (
+                    <span style={{ marginLeft: "auto", color: "var(--emerald)", fontWeight: 600 }}>+{counts.linux.today} today</span>
+                  )}
+                </div>
+              )}
+
+              <div style={{ display: "flex", gap: "0.75rem", marginTop: "auto" }}>
+                <a
+                  href="/downloads/Servera.deb"
+                  download
+                  className="btn btn-download"
+                  style={{ flex: 1, padding: "1rem", fontSize: "0.95rem", background: "linear-gradient(135deg, var(--emerald) 0%, #047857 100%)" }}
+                  onClick={() => trackDownload("linux")}
+                >
+                  <Download size={18} /> .deb
+                </a>
+                <a
+                  href="/downloads/Servera.AppImage"
+                  download
+                  className="btn btn-download"
+                  style={{ flex: 1, padding: "1rem", fontSize: "0.95rem", background: "linear-gradient(135deg, var(--emerald) 0%, #047857 100%)" }}
+                  onClick={() => trackDownload("linux")}
+                >
+                  <Download size={18} /> .AppImage
+                </a>
+              </div>
+            </div>
+
             {/* ── iOS — Coming Q3 ── */}
             <div className="glass card" style={{ padding: "3rem", display: "flex", flexDirection: "column", opacity: 0.75 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "2.5rem" }}>
@@ -492,22 +571,22 @@ export default function DownloadPage() {
             </div>
           </div>
 
-          {/* ── Linux callout ── */}
+          {/* ── Linux packages note ── */}
           <div className="glass" style={{ borderRadius: 24, padding: "2.5rem 3rem", display: "grid", gridTemplateColumns: "1fr auto", alignItems: "center", gap: "3rem", marginBottom: "3rem" }}>
             <div>
               <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", marginBottom: "0.75rem" }}>
                 <div style={{ background: "rgba(16,185,129,0.08)", width: 36, height: 36, borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center" }}>
                   <Globe size={18} color="var(--emerald)" />
                 </div>
-                <h3 style={{ fontSize: "1.2rem" }}>Linux</h3>
+                <h3 style={{ fontSize: "1.2rem" }}>Linux Packages</h3>
               </div>
               <p style={{ color: "var(--text-2)", fontSize: "0.9rem", lineHeight: 1.65 }}>
-                The GUI build for Linux is currently in private beta.
-                Reach out if you want early access — we&apos;re onboarding testers now.
+                Servera is available as <b>.deb</b> (Ubuntu, Debian) and <b>.AppImage</b> (universal).
+                Need a different format? Let us know.
               </p>
             </div>
             <a href="mailto:hello@servera.io" className="btn btn-ghost" style={{ padding: "0.85rem 2rem", whiteSpace: "nowrap" }}>
-              Request Access <ChevronRight size={16} />
+              Contact Us <ChevronRight size={16} />
             </a>
           </div>
 
@@ -530,6 +609,7 @@ export default function DownloadPage() {
               {[
                 { key: "windows", name: "Windows (EXE)", icon: <Monitor size={16} />, color: "var(--violet-2)", status: "Available", statusClass: "badge-g" },
                 { key: "macos",   name: "macOS (DMG)",   icon: <Command size={16} />,   color: "var(--cyan-2)",   status: "Available", statusClass: "badge-g" },
+                { key: "linux",   name: "Linux (DEB / AppImage)", icon: <Globe size={16} />, color: "var(--emerald)", status: "Available", statusClass: "badge-g" },
                 { key: "ios",     name: "iOS (IPA)",     icon: <Smartphone size={16} />, color: "var(--amber)", status: "Coming Q3", statusClass: "badge-a" },
               ].map((row) => (
                 <div key={row.key} style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr", gap: "1rem", padding: "1rem", borderBottom: "1px solid var(--b0)", alignItems: "center" }}>
@@ -556,7 +636,7 @@ export default function DownloadPage() {
                   {totalAll.toLocaleString()}
                 </span>
                 <span className="mono" style={{ fontSize: "0.9rem", color: "var(--emerald)", fontWeight: 600 }}>
-                  +{(counts.windows?.today || 0) + (counts.macos?.today || 0) + (counts.ios?.today || 0)}
+                  +{(counts.windows?.today || 0) + (counts.macos?.today || 0) + (counts.linux?.today || 0) + (counts.ios?.today || 0)}
                 </span>
                 <span />
               </div>

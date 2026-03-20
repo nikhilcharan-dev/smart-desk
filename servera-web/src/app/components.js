@@ -112,14 +112,13 @@ export const Navbar = () => {
     <nav className={`nav${scrolled ? " nav--scrolled" : ""}`}>
       {/* Logo */}
       <Link href="/" style={{ display: "flex", alignItems: "center", gap: "0.65rem" }}>
-        <div style={{
-          background: "linear-gradient(135deg, var(--violet) 0%, #5b21b6 100%)",
-          width: 34, height: 34, borderRadius: 9,
-          display: "flex", alignItems: "center", justifyContent: "center",
-          boxShadow: "0 4px 14px var(--violet-glow)",
-        }}>
-          <Server size={17} color="white" />
-        </div>
+        <Image
+          src="/icon-32.png"
+          alt="Servera"
+          width={34}
+          height={34}
+          style={{ borderRadius: 9 }}
+        />
         <span style={{ fontFamily: "var(--ffd)", fontWeight: 800, fontSize: "1.25rem", letterSpacing: "-0.04em" }}>
           Servera
         </span>
@@ -234,7 +233,7 @@ export const Hero = () => {
           <div style={{ marginBottom: "1.75rem" }}>
             <span className="badge badge-v" style={{ fontSize: "0.72rem" }}>
               <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--violet-2)", display: "inline-block" }} />
-              v0.1.0 now available for Windows
+              v0.1.0 now available for Windows, macOS & Linux
               <ChevronRight size={12} style={{ marginLeft: 2, opacity: 0.7 }} />
             </span>
           </div>
@@ -266,8 +265,8 @@ export const Hero = () => {
           <div style={{ display: "flex", alignItems: "center", gap: "1.25rem", flexWrap: "wrap" }}>
             {[
               { icon: <CheckCircle size={14} color="var(--emerald)" />, label: "Free core version" },
-              { icon: <CheckCircle size={14} color="var(--emerald)" />, label: "Windows 10 / 11" },
-              { icon: <CheckCircle size={14} color="var(--emerald)" />, label: "No cloud required" },
+              { icon: <CheckCircle size={14} color="var(--emerald)" />, label: "Windows · macOS · Linux" },
+              { icon: <CheckCircle size={14} color="var(--emerald)" />, label: "No account required" },
             ].map(({ icon, label }, i) => (
               <div key={i} style={{ display: "flex", alignItems: "center", gap: "0.4rem", fontSize: "0.8rem", color: "var(--text-2)" }}>
                 {icon} {label}
@@ -855,8 +854,8 @@ export const HowItWorks = () => {
       icon: <Package size={22} color="var(--violet-2)" />,
       label: "01",
       title: "Install & Launch",
-      desc: "Download the Windows installer, run it, and Servera is up in under 30 seconds. No dependencies, no config files.",
-      detail: "The installer weighs under 90 MB and requires no admin privileges. Runs natively on Windows 10 and 11.",
+      desc: "Download the installer for your platform, run it, and Servera is up in under 30 seconds. No dependencies, no config files.",
+      detail: "The installer weighs under 90 MB. Available for Windows 10/11, macOS 12+, and Linux (deb & AppImage).",
       color: "var(--violet)",
     },
     {
@@ -1059,7 +1058,7 @@ export const DownloadCTA = () => {
             </div>
 
             <p className="mono" style={{ fontSize: "0.75rem", color: "var(--text-3)" }}>
-              Windows 10 / 11 · x64 · ~82 MB · Free
+              Windows · macOS · Linux · x64 · Free
             </p>
           </div>
         </div>

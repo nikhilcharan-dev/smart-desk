@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import getRedis from "@/lib/redis";
 
-const PLATFORMS = ["windows", "macos", "ios"];
+const PLATFORMS = ["windows", "macos", "linux", "ios"];
 const KEY_PREFIX = "servera:downloads";
 
 function key(platform) {
