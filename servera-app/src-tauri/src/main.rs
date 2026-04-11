@@ -5,11 +5,14 @@ mod ai_provider;
 mod profile_manager;
 mod ssh_client;
 mod local_ops;
+mod ssh_config;
+mod os_support;
 
 use ai_config::{AiConfig, AiConfigManager};
 use profile_manager::{Profile, ProfileManager};
 use ssh_client::{spawn_read_thread, SshConnection, SshExecConn};
 use std::sync::{Arc, Mutex};
+use std::collections::HashMap;
 use tauri::{AppHandle, State, Manager};
 use serde::{Deserialize, Serialize};
 use sysinfo::{System, Disks};
@@ -20,14 +23,25 @@ use sysinfo::{System, Disks};
 
 type SharedSession = Arc<Mutex<Option<SshConnection>>>;
 type SharedExecConn = Arc<Mutex<Option<SshExecConn>>>;
+type MfaSender = tokio::sync::oneshot::Sender<Vec<String>>;
 
 struct AppState {
-    sessions: Arc<Mutex<std::collections::HashMap<String, SharedSession>>>,
-    exec_conns: Arc<Mutex<std::collections::HashMap<String, SharedExecConn>>>,
+    sessions: Mutex<HashMap<String, SharedSession>>,
+    exec_conns: Mutex<HashMap<String, SharedExecConn>>,
+    mfa_channels: Mutex<HashMap<String, MfaSender>>,
     system: Mutex<System>,
 }
 
 impl AppState {
+    fn new() -> Self {
+        Self {
+            sessions: Mutex::new(HashMap::new()),
+            exec_conns: Mutex::new(HashMap::new()),
+            mfa_channels: Mutex::new(HashMap::new()),
+            system: Mutex::new(System::new_all()),
+        }
+    }
+
     fn get_session(&self, id: &str) -> Option<SharedSession> {
         let guard = self.sessions.lock().unwrap_or_else(|p| p.into_inner());
         guard.get(id).cloned()
@@ -56,6 +70,21 @@ impl AppState {
     fn close_exec_conn(&self, id: &str) {
         let mut guard = self.exec_conns.lock().unwrap_or_else(|p| p.into_inner());
         guard.remove(id);
+    }
+
+    fn register_mfa(&self, id: &str, tx: MfaSender) {
+        let mut guard = self.mfa_channels.lock().unwrap_or_else(|p| p.into_inner());
+        guard.insert(id.to_string(), tx);
+    }
+
+    fn resolve_mfa(&self, id: &str, responses: Vec<String>) -> bool {
+        let mut guard = self.mfa_channels.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(tx) = guard.remove(id) {
+            let _ = tx.send(responses);
+            true
+        } else {
+            false
+        }
     }
 }
 
@@ -130,7 +159,16 @@ async fn connect_to_profile(
             return Err("Password not found and no private key provided".to_string());
         }
 
-        let conn = SshConnection::new(&profile.ip, &profile.user, password.as_deref(), profile.private_key_path.as_deref())?;
+        let conn = SshConnection::new(
+            &profile.ip, 
+            &profile.user, 
+            profile.port,
+            password.as_deref(), 
+            profile.private_key_path.as_deref(),
+            profile.proxy_jump.as_deref(),
+            &app,
+            &session_id
+        )?;
         let fingerprint = conn.host_key_fingerprint.clone().unwrap_or_default();
 
         let session = state.ensure_session(&session_id);
@@ -138,7 +176,16 @@ async fn connect_to_profile(
         *guard = Some(conn);
         drop(guard);
 
-        let exec_conn = SshExecConn::connect(&profile.ip, &profile.user, password.as_deref(), profile.private_key_path.as_deref())?;
+        let exec_conn = SshExecConn::connect(
+            &profile.ip, 
+            &profile.user, 
+            profile.port,
+            password.as_deref(), 
+            profile.private_key_path.as_deref(),
+            profile.proxy_jump.as_deref(),
+            &app,
+            &session_id
+        )?;
         let exec = state.ensure_exec_conn(&session_id);
         *lock_exec(&exec) = Some(exec_conn);
 
@@ -158,11 +205,13 @@ async fn start_ssh_session(
     session_id: String,
     ip: String,
     user: String,
+    port: u16,
     password: Option<String>,
     private_key: Option<String>,
+    proxy_jump: Option<String>,
 ) -> Result<String, String> {
     tokio::task::block_in_place(|| {
-        let conn = SshConnection::new(&ip, &user, password.as_deref(), private_key.as_deref())?;
+        let conn = SshConnection::new(&ip, &user, port, password.as_deref(), private_key.as_deref(), proxy_jump.as_deref(), &app, &session_id)?;
         let fingerprint = conn.host_key_fingerprint.clone().unwrap_or_default();
 
         let session = state.ensure_session(&session_id);
@@ -170,13 +219,18 @@ async fn start_ssh_session(
         *guard = Some(conn);
         drop(guard);
 
-        let exec_conn = SshExecConn::connect(&ip, &user, password.as_deref(), private_key.as_deref())?;
+        let exec_conn = SshExecConn::connect(&ip, &user, port, password.as_deref(), private_key.as_deref(), proxy_jump.as_deref(), &app, &session_id)?;
         let exec = state.ensure_exec_conn(&session_id);
         *lock_exec(&exec) = Some(exec_conn);
 
         spawn_read_thread(session_id, session, app);
         Ok(fingerprint)
     })
+}
+
+#[tauri::command]
+fn resolve_mfa_response(state: State<'_, AppState>, session_id: String, responses: Vec<String>) -> bool {
+    state.resolve_mfa(&session_id, responses)
 }
 
 #[tauri::command]
@@ -680,16 +734,127 @@ fn save_snippets(app: AppHandle, content: String) -> Result<(), String> {
 }
 
 /* =========================
+   SSH CONFIG IMPORT COMMANDS
+   ========================= */
+
+#[tauri::command]
+fn detect_ssh_config_path() -> ssh_config::DetectResult {
+    ssh_config::resolver::detect_ssh_config()
+}
+
+#[tauri::command]
+fn parse_ssh_config(path: String) -> Result<Vec<ssh_config::parser::SshConfigEntry>, String> {
+    let mut seen = Vec::new();
+    ssh_config::parser::parse_ssh_config(std::path::Path::new(&path), &mut seen)
+}
+
+#[tauri::command]
+fn import_ssh_profiles(app: AppHandle, entries: Vec<ssh_config::parser::SshConfigEntry>) -> Result<ssh_config::ImportResult, String> {
+    let mgr = ProfileManager::new(&app);
+    let mut existing_profiles = mgr.load()?;
+    let mut imported = 0;
+    let mut skipped = 0;
+    let errors = Vec::new();
+
+    for entry in entries {
+        let new_profiles = ssh_config::mapper::map_entry_to_profile(&entry);
+        for p in new_profiles {
+            // Check for duplicates by IP and User
+            if existing_profiles.iter().any(|ep| ep.ip == p.ip && ep.user == p.user) {
+                skipped += 1;
+                continue;
+            }
+            existing_profiles.push(p);
+            imported += 1;
+        }
+    }
+
+    mgr.save(existing_profiles)?;
+    Ok(ssh_config::ImportResult {
+        imported,
+        skipped,
+        errors,
+    })
+}
+
+/* =========================
+   OS-SPECIFIC COMMANDS (Milestone 3)
+   ========================= */
+
+#[tauri::command]
+async fn get_system_metadata(state: State<'_, AppState>, session_id: String) -> Result<serde_json::Value, String> {
+    let exec = state.get_exec_conn(&session_id).ok_or("No exec session found")?;
+    tokio::task::block_in_place(|| {
+        let guard = lock_exec(&exec);
+        let conn = guard.as_ref().ok_or_else(|| "No active exec session".to_string())?;
+        
+        // Detect package manager
+        let manager = os_support::detect_package_manager(|cmd| conn.exec_command(cmd));
+        let manager_name = manager.as_ref().map(|m| m.name().to_string()).unwrap_or_else(|| "Unknown".to_string());
+        let has_manager = manager.is_some();
+
+        Ok(serde_json::json!({
+            "manager": manager_name,
+            "has_manager": has_manager,
+        }))
+    })
+}
+
+#[tauri::command]
+async fn get_package_updates(state: State<'_, AppState>, session_id: String) -> Result<Vec<os_support::PackageInfo>, String> {
+    let exec = state.get_exec_conn(&session_id).ok_or("No exec session found")?;
+    tokio::task::block_in_place(|| {
+        let guard = lock_exec(&exec);
+        let conn = guard.as_ref().ok_or_else(|| "No active exec session".to_string())?;
+        
+        let manager = os_support::detect_package_manager(|cmd| conn.exec_command(cmd))
+            .ok_or_else(|| "No supported package manager detected on this host".to_string())?;
+
+        // 1. Refresh
+        let _ = conn.exec_command(manager.update_cmd());
+        
+        // 2. List
+        let output = conn.exec_command(manager.list_upgradable_cmd())?;
+        
+        // 3. Parse
+        Ok(manager.parse_upgradable(&output))
+    })
+}
+
+#[tauri::command]
+async fn perform_package_upgrade(state: State<'_, AppState>, session_id: String) -> Result<String, String> {
+    let exec = state.get_exec_conn(&session_id).ok_or("No exec session found")?;
+    tokio::task::block_in_place(|| {
+        let guard = lock_exec(&exec);
+        let conn = guard.as_ref().ok_or_else(|| "No active exec session".to_string())?;
+        
+        let manager = os_support::detect_package_manager(|cmd| conn.exec_command(cmd))
+            .ok_or_else(|| "No supported package manager detected on this host".to_string())?;
+
+        conn.exec_command(manager.upgrade_cmd())
+    })
+}
+
+#[tauri::command]
+async fn get_standard_metrics(state: State<'_, AppState>, session_id: String) -> Result<os_support::SystemMetrics, String> {
+    let exec = state.get_exec_conn(&session_id).ok_or("No exec session found")?;
+    tokio::task::block_in_place(|| {
+        let guard = lock_exec(&exec);
+        let conn = guard.as_ref().ok_or_else(|| "No active exec session".to_string())?;
+        
+        let monitor = os_support::get_default_monitor();
+        let output = conn.exec_command(&monitor.gather_stats_cmd())?;
+        monitor.parse_stats(&output)
+    })
+}
+
+/* =========================
    MAIN
    ========================= */
 
 fn main() {
     tauri::Builder::default()
-        .manage(AppState {
-            sessions: Arc::new(Mutex::new(std::collections::HashMap::new())),
-            exec_conns: Arc::new(Mutex::new(std::collections::HashMap::new())),
-            system: Mutex::new(System::new_all()),
-        })
+        .manage(AppState::new())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             // SSH
@@ -743,7 +908,17 @@ fn main() {
             // Snippets
             load_snippets,
             save_snippets,
+            // SSH Config
+            detect_ssh_config_path,
+            parse_ssh_config,
+            import_ssh_profiles,
+            resolve_mfa_response,
+            // OS-Specific
+            get_system_metadata,
+            get_package_updates,
+            perform_package_upgrade,
+            get_standard_metrics,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running app");
+        .expect("error while running tauri application");
 }

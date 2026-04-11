@@ -17,6 +17,8 @@ pub struct Profile {
     pub color: Option<String>,
     #[serde(default)]
     pub last_connected: Option<u64>,
+    #[serde(default)]
+    pub proxy_jump: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Default)]

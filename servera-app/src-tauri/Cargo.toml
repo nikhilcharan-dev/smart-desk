@@ -20,6 +20,9 @@ aws-config = "1"
 aws-credential-types = { version = "1", features = ["hardcoded-credentials"] }
 aws-sdk-bedrockruntime = "1"
 aws-types = "1"
+glob = "0.3.3"
+home = "0.5.12"
+uuid = { version = "1.23.0", features = ["v4"] }
 
 [build-dependencies]
 tauri-build = { version = "2.5.3", features = [] }

@@ -1,12 +1,12 @@
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 use ssh2::{Channel, Session, Sftp};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 /// TCP connect timeout in seconds
 const CONNECT_TIMEOUT_SECS: u64 = 10;
@@ -47,54 +47,26 @@ fn shell_escape(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+
+
 impl SshConnection {
-    pub fn new(ip: &str, user: &str, password: Option<&str>, private_key: Option<&str>) -> Result<Self, String> {
-        // Use connect_timeout to avoid hanging on unreachable hosts
-        let addr = format!("{}:22", ip);
-        let sock_addr = addr.parse::<std::net::SocketAddr>()
-            .or_else(|_| {
-                use std::net::ToSocketAddrs;
-                addr.to_socket_addrs()
-                    .map_err(|e| format!("DNS resolution failed for {}: {}", ip, e))?
-                    .next()
-                    .ok_or_else(|| format!("Could not resolve host: {}", ip))
-            })?;
-
-        let tcp = TcpStream::connect_timeout(&sock_addr, Duration::from_secs(CONNECT_TIMEOUT_SECS))
-            .map_err(|e| format!("Connection to {} timed out or failed: {}", ip, e))?;
-
-        let _ = tcp.set_read_timeout(Some(Duration::from_secs(30)));
-        let _ = tcp.set_write_timeout(Some(Duration::from_secs(30)));
-
+    pub fn new(
+        ip: &str, 
+        user: &str, 
+        port: u16,
+        password: Option<&str>, 
+        private_key: Option<&str>,
+        proxy_jump: Option<&str>,
+        app: &AppHandle,
+        session_id: &str
+    ) -> Result<Self, String> {
         let mut sess = Session::new().map_err(|e| format!("Failed to create SSH session: {}", e))?;
-        sess.set_tcp_stream(tcp);
-        sess.handshake().map_err(|e| format!("SSH handshake failed: {}", e))?;
+        establish_session(&mut sess, ip, port, user, password, private_key, proxy_jump, app, session_id)?;
 
-        // Capture host key fingerprint for verification
         let host_key_fingerprint = sess.host_key()
             .map(|(key, _key_type)| {
                 key.iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(":")
             });
-
-        // Auth Logic
-        let mut authenticated = false;
-
-        if let Some(key_path) = private_key {
-            if sess.userauth_pubkey_file(user, None, Path::new(key_path), None).is_ok() {
-                authenticated = true;
-            }
-        }
-
-        if !authenticated {
-            if let Some(pwd) = password {
-                sess.userauth_password(user, pwd).map_err(|e| format!("Authentication failed: {}", e))?;
-                authenticated = true;
-            }
-        }
-
-        if !authenticated {
-            return Err("Authentication failed: No valid method succeeded.".into());
-        }
 
         let mut channel = sess.channel_session().map_err(|e| e.to_string())?;
         channel
@@ -125,53 +97,180 @@ impl SshConnection {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SshExecConn — dedicated exec/SFTP connection, separate TCP session so it
-// never competes with the terminal PTY read-thread mutex.
-// Always kept in blocking mode; no `with_blocking` toggling needed.
+// Authentication & Jump Host Helpers
 // ─────────────────────────────────────────────────────────────────────────────
+
+struct MfaPrompter<'a> {
+    app: &'a AppHandle,
+    session_id: &'a str,
+}
+
+impl<'a> ssh2::KeyboardInteractivePrompt for MfaPrompter<'a> {
+    fn prompt(
+        &mut self,
+        name: &str,
+        instruction: &str,
+        prompts: &[ssh2::Prompt],
+    ) -> Vec<String> {
+        let mut ui_prompts = Vec::new();
+        for p in prompts {
+            ui_prompts.push(serde_json::json!({
+                "text": p.text,
+                "echo": p.echo,
+            }));
+        }
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let state: tauri::State<crate::AppState> = self.app.state();
+        state.register_mfa(self.session_id, tx);
+
+        let _ = self.app.emit("mfa-requested", serde_json::json!({
+            "session_id": self.session_id,
+            "name": name,
+            "instruction": instruction,
+            "prompts": ui_prompts,
+        }));
+
+        // Block current thread waiting for response with a 5-minute timeout.
+        let timeout_duration = std::time::Duration::from_secs(300);
+        match tokio::runtime::Handle::current().block_on(tokio::time::timeout(timeout_duration, rx)) {
+            Ok(Ok(response)) => response,
+            _ => Vec::new(),
+        }
+    }
+}
+
+fn authenticate_session(
+    sess: &mut Session, 
+    user: &str, 
+    password: Option<&str>, 
+    private_key: Option<&str>,
+    app: &AppHandle,
+    session_id: &str
+) -> Result<(), String> {
+    let mut authenticated = false;
+
+    if let Some(key_path) = private_key {
+        if sess.userauth_pubkey_file(user, None, Path::new(key_path), None).is_ok() {
+            authenticated = true;
+        }
+    }
+
+    if !authenticated {
+        if let Some(pwd) = password {
+            if sess.userauth_password(user, pwd).is_ok() {
+                authenticated = true;
+            }
+        }
+    }
+
+    if !authenticated {
+        let auth_methods = sess.auth_methods(user).unwrap_or_default();
+        if auth_methods.contains("keyboard-interactive") {
+            let mut prompter = MfaPrompter { app, session_id };
+            if sess.userauth_keyboard_interactive(user, &mut prompter).is_ok() {
+                authenticated = true;
+            }
+        }
+    }
+
+    if !authenticated {
+        return Err("Authentication failed: No valid method succeeded.".into());
+    }
+    Ok(())
+}
+
+fn establish_session(
+    sess: &mut Session,
+    ip: &str,
+    port: u16,
+    user: &str,
+    password: Option<&str>,
+    private_key: Option<&str>,
+    proxy_jump: Option<&str>,
+    app: &AppHandle,
+    session_id: &str
+) -> Result<(), String> {
+    if let Some(jump) = proxy_jump {
+        let hops: Vec<&str> = jump.split(',').collect();
+        let next_jump = if hops.len() > 1 { Some(hops[1..].join(",")) } else { None };
+        let first_hop = hops[0];
+
+        let (jump_user, jump_host) = if let Some(at_idx) = first_hop.find('@') {
+            (&first_hop[..at_idx], &first_hop[at_idx+1..])
+        } else {
+            ("root", first_hop)
+        };
+
+        let (jump_ip, jump_port) = if let Some(colon_idx) = jump_host.find(':') {
+            (&jump_host[..colon_idx], jump_host[colon_idx+1..].parse().unwrap_or(22))
+        } else {
+            (jump_host, 22)
+        };
+
+        let mut jump_sess = Session::new().map_err(|e| e.to_string())?;
+        establish_session(&mut jump_sess, jump_ip, jump_port, jump_user, None, None, next_jump.as_deref(), app, session_id)?;
+
+        let channel = jump_sess.channel_direct_tcpip(ip, port, None).map_err(|e| e.to_string())?;
+        
+        // ── Loopback Bridge Strategy (to satisfy AsRawSocket) ──
+        // We cannot use 'channel' as transport directly because it's not a raw socket.
+        // We create a local listener, connect to it, and pipe data bidirectionally.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
+        let addr = listener.local_addr().unwrap();
+        
+        let client_sock = std::net::TcpStream::connect(addr).map_err(|e| e.to_string())?;
+        let (server_sock, _) = listener.accept().map_err(|e| e.to_string())?;
+        
+        // Setup piping
+        let mut chan_reader = channel;
+        let mut chan_writer = chan_reader.clone();
+        let mut server_reader = server_sock;
+        let mut server_writer = server_reader.try_clone().map_err(|e| e.to_string())?;
+
+        std::thread::spawn(move || {
+            let _ = std::io::copy(&mut chan_reader, &mut server_writer);
+        });
+        std::thread::spawn(move || {
+            let _ = std::io::copy(&mut server_reader, &mut chan_writer);
+        });
+
+        sess.set_tcp_stream(client_sock);
+    } else {
+        let addr = format!("{}:{}", ip, port);
+        let tcp = TcpStream::connect_timeout(
+            &addr.to_socket_addrs().map_err(|e| e.to_string())?.next().ok_or("DNS failed")?, 
+            Duration::from_secs(CONNECT_TIMEOUT_SECS)
+        ).map_err(|e| format!("Connection to {} failed: {}", ip, e))?;
+
+        let _ = tcp.set_read_timeout(Some(Duration::from_secs(30)));
+        let _ = tcp.set_write_timeout(Some(Duration::from_secs(30)));
+        sess.set_tcp_stream(tcp);
+    }
+
+    sess.handshake().map_err(|e| format!("SSH handshake failed: {}", e))?;
+    authenticate_session(sess, user, password, private_key, app, session_id)?;
+    Ok(())
+}
 
 pub struct SshExecConn {
     pub session: Session,
 }
 
 impl SshExecConn {
-    pub fn connect(ip: &str, user: &str, password: Option<&str>, private_key: Option<&str>) -> Result<Self, String> {
-        let addr = format!("{}:22", ip);
-        let sock_addr = addr.parse::<std::net::SocketAddr>()
-            .or_else(|_| {
-                use std::net::ToSocketAddrs;
-                addr.to_socket_addrs()
-                    .map_err(|e| format!("DNS resolution failed for {}: {}", ip, e))?
-                    .next()
-                    .ok_or_else(|| format!("Could not resolve host: {}", ip))
-            })?;
-
-        let tcp = TcpStream::connect_timeout(&sock_addr, Duration::from_secs(CONNECT_TIMEOUT_SECS))
-            .map_err(|e| format!("Exec connection timed out or failed: {}", e))?;
-        let _ = tcp.set_read_timeout(Some(Duration::from_secs(30)));
-        let _ = tcp.set_write_timeout(Some(Duration::from_secs(30)));
-
+    pub fn connect(
+        ip: &str, 
+        user: &str, 
+        port: u16,
+        password: Option<&str>, 
+        private_key: Option<&str>,
+        proxy_jump: Option<&str>,
+        app: &AppHandle,
+        session_id: &str
+    ) -> Result<Self, String> {
         let mut sess = Session::new().map_err(|e| format!("Failed to create SSH session: {}", e))?;
-        sess.set_tcp_stream(tcp);
-        sess.handshake().map_err(|e| format!("SSH handshake failed: {}", e))?;
-
-        let mut authenticated = false;
-        if let Some(key_path) = private_key {
-            if sess.userauth_pubkey_file(user, None, Path::new(key_path), None).is_ok() {
-                authenticated = true;
-            }
-        }
-        if !authenticated {
-            if let Some(pwd) = password {
-                sess.userauth_password(user, pwd).map_err(|e| format!("Authentication failed: {}", e))?;
-                authenticated = true;
-            }
-        }
-        if !authenticated {
-            return Err("Authentication failed: No valid method succeeded.".into());
-        }
-
-        sess.set_blocking(true); // always blocking — no terminal read-thread on this session
+        establish_session(&mut sess, ip, port, user, password, private_key, proxy_jump, app, session_id)?;
+        sess.set_blocking(true); 
         Ok(Self { session: sess })
     }
 
