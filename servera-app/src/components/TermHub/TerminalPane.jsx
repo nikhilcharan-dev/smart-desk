@@ -3,10 +3,11 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { X } from 'lucide-react';
 import "@xterm/xterm/css/xterm.css";
 import './TerminalPane.css';
 
-export default function TerminalPane({ sessionId, profile, isActive, onFocus }) {
+export default function TerminalPane({ sessionId, profile, isActive, onFocus, onClose, showCloseBtn }) {
     const terminalRef = useRef(null);
     const xtermRef = useRef(null);
     const fitAddonRef = useRef(null);
@@ -73,6 +74,34 @@ export default function TerminalPane({ sessionId, profile, isActive, onFocus }) 
                 });
         });
 
+        // Clipboard integration: Ctrl+C copies selection (no SIGINT), Ctrl+V pastes
+        term.attachCustomKeyEventHandler((e) => {
+            if (e.type !== 'keydown') return true;
+            const ctrl = e.ctrlKey || e.metaKey;
+            if (!ctrl) return true;
+
+            // Ctrl+C with active selection → copy, don't send SIGINT
+            if (e.key === 'c' && !e.shiftKey && term.hasSelection()) {
+                navigator.clipboard.writeText(term.getSelection()).catch(() => {});
+                return false;
+            }
+            // Ctrl+Shift+C → copy selection (always)
+            if (e.key === 'C' && e.shiftKey) {
+                if (term.hasSelection()) {
+                    navigator.clipboard.writeText(term.getSelection()).catch(() => {});
+                }
+                return false;
+            }
+            // Ctrl+V / Ctrl+Shift+V → paste from clipboard into terminal
+            if (e.key === 'v' || e.key === 'V') {
+                navigator.clipboard.readText().then(text => {
+                    if (text) invoke("send_ssh_input", { sessionId, input: text });
+                }).catch(() => {});
+                return false;
+            }
+            return true;
+        });
+
         xtermRef.current = term;
 
         // Initial fit
@@ -120,9 +149,20 @@ export default function TerminalPane({ sessionId, profile, isActive, onFocus }) 
                         {profile ? profile.name : 'Terminal'}
                     </span>
                 </div>
-                <span className="tp__session-id">
-                    {profile ? `${profile.user}@${profile.ip}` : sessionId}
-                </span>
+                <div className="tp__header-right">
+                    <span className="tp__session-id">
+                        {profile ? `${profile.user}@${profile.ip}` : sessionId}
+                    </span>
+                    {showCloseBtn && onClose && (
+                        <button
+                            className="tp__close-btn"
+                            onClick={(e) => { e.stopPropagation(); onClose(); }}
+                            title="Close session"
+                        >
+                            <X size={11} />
+                        </button>
+                    )}
+                </div>
             </div>
             <div className="tp__body" ref={terminalRef} />
         </div>

@@ -55,6 +55,12 @@
     letter-spacing: 0.05em;
 }
 
+.tp__header-right {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
 .tp__session-id {
     font-size: 10px;
     color: var(--th-text-muted, #5a6780);
@@ -62,6 +68,31 @@
     background: var(--th-bg-surface, #1a2233);
     padding: 2px 8px;
     border-radius: 4px;
+}
+
+.tp__close-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    border-radius: 4px;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    color: var(--th-text-muted, #5a6780);
+    opacity: 0;
+    transition: all 0.15s;
+}
+
+.tp__header:hover .tp__close-btn {
+    opacity: 1;
+}
+
+.tp__close-btn:hover {
+    background: var(--th-danger, #ef4444);
+    color: #fff;
+    opacity: 1;
 }
 
 /* =============================================

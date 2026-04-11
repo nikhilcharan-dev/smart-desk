@@ -1,10 +1,11 @@
 import { useState } from 'react';
-import { Settings2, Cpu, Key, Clock, ListTree, Database } from 'lucide-react';
+import { Settings2, Cpu, Key, Clock, ListTree, Database, Download } from 'lucide-react';
 import AppConfig from './Panels/AppConfig';
 import SSHKeys from './Panels/SSHKeys';
 import CronJobs from './Panels/CronJobs';
 import ServiceManager from './Panels/ServiceManager';
 import EnvManager from './Panels/EnvManager';
+import ImportProfiles from './Panels/ImportProfiles';
 import SidebarCustomizer from './Panels/SidebarCustomizer';
 import './SettingsHub.css';
 
@@ -15,6 +16,7 @@ const TABS = [
     { id: 'cron', label: 'Cron Jobs', icon: Clock, component: CronJobs },
     { id: 'services', label: 'Services', icon: Cpu, component: ServiceManager },
     { id: 'env', label: 'Environment', icon: Database, component: EnvManager },
+    { id: 'import', label: 'Import Profiles', icon: Download, component: ImportProfiles },
 ];
 
 export default function SettingsHub({ sidebarItems, setSidebarItems }) {

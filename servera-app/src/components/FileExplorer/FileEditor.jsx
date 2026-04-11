@@ -1,9 +1,57 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import Editor from "@monaco-editor/react";
-import { X, Save, FileText, Loader2 } from "lucide-react";
+import { X, Save, FileText } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { MAIN_SESSION_ID } from "../../utils/terminal";
 import "./FileEditor.css";
+
+const PHASES = [
+    { label: "Preparing request...", target: 20 },
+    { label: "Reading file...",      target: 82 },
+    { label: "Decoding content...",  target: 93 },
+    { label: "Initializing editor...", target: 100 },
+];
+
+function useFileProgress() {
+    const [progress, setProgress] = useState(0);
+    const [phaseIndex, setPhaseIndex] = useState(0);
+    const rafRef = useRef(null);
+    const currentRef = useRef(0);
+    const targetRef = useRef(0);
+
+    const animateTo = useCallback((target, onDone) => {
+        targetRef.current = target;
+        const step = () => {
+            const diff = targetRef.current - currentRef.current;
+            if (diff <= 0.1) {
+                currentRef.current = targetRef.current;
+                setProgress(Math.round(currentRef.current));
+                if (onDone) onDone();
+                return;
+            }
+            // Ease-out: move 8% of remaining distance each frame
+            currentRef.current += diff * 0.08;
+            setProgress(Math.round(currentRef.current));
+            rafRef.current = requestAnimationFrame(step);
+        };
+        if (rafRef.current) cancelAnimationFrame(rafRef.current);
+        rafRef.current = requestAnimationFrame(step);
+    }, []);
+
+    const advanceTo = useCallback((phase) => {
+        setPhaseIndex(phase);
+        animateTo(PHASES[phase].target);
+    }, [animateTo]);
+
+    const advanceToWithDone = useCallback((phase, onDone) => {
+        setPhaseIndex(phase);
+        animateTo(PHASES[phase].target, onDone);
+    }, [animateTo]);
+
+    useEffect(() => () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); }, []);
+
+    return { progress, phaseLabel: PHASES[phaseIndex]?.label ?? "", advanceTo, advanceToWithDone };
+}
 
 export default function FileEditor({ file, mode, onClose, onSaveSuccess }) {
     const [content, setContent] = useState("");
@@ -11,27 +59,18 @@ export default function FileEditor({ file, mode, onClose, onSaveSuccess }) {
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState(null);
     const [language, setLanguage] = useState("plaintext");
+    const { progress, phaseLabel, advanceTo, advanceToWithDone } = useFileProgress();
 
     useEffect(() => {
         const detectLanguage = (filename) => {
             const ext = filename.split('.').pop().toLowerCase();
             const map = {
-                'js': 'javascript',
-                'jsx': 'javascript',
-                'ts': 'typescript',
-                'tsx': 'typescript',
-                'json': 'json',
-                'html': 'html',
-                'css': 'css',
-                'md': 'markdown',
-                'py': 'python',
-                'rs': 'rust',
-                'sh': 'shell',
-                'env': 'shell',
-                'conf': 'ini',
-                'yaml': 'yaml',
-                'yml': 'yaml',
-                'xml': 'xml'
+                'js': 'javascript', 'jsx': 'javascript',
+                'ts': 'typescript', 'tsx': 'typescript',
+                'json': 'json', 'html': 'html', 'css': 'css',
+                'md': 'markdown', 'py': 'python', 'rs': 'rust',
+                'sh': 'shell', 'env': 'shell', 'conf': 'ini',
+                'yaml': 'yaml', 'yml': 'yaml', 'xml': 'xml'
             };
             return map[ext] || "plaintext";
         };
@@ -39,48 +78,51 @@ export default function FileEditor({ file, mode, onClose, onSaveSuccess }) {
         const loadFile = async () => {
             setLoading(true);
             setError(null);
-            
-            // Set a safety timeout to prevent infinite loading
-            const timeoutPromise = new Promise((_, reject) => 
+
+            // Phase 0 → 20%: preparing
+            advanceTo(0);
+
+            const timeoutPromise = new Promise((_, reject) =>
                 setTimeout(() => reject(new Error("Request timed out (30s). The file might be too large or the connection is slow.")), 30000)
             );
 
             try {
                 const command = mode === 'sftp' ? "sftp_read" : "local_read_file";
                 const args = mode === 'sftp' ? { sessionId: MAIN_SESSION_ID, path: file.path } : { path: file.path };
-                
-                console.log(`[FileEditor] Loading ${file.path} via ${command}...`);
-                
-                // Race between the invoke and the timeout
-                const bytes = await Promise.race([
-                    invoke(command, args),
-                    timeoutPromise
-                ]);
 
-                if (!bytes) {
-                    throw new Error("No data received from file");
-                }
+                console.log(`[FileEditor] Loading ${file.path} via ${command}...`);
+
+                // Phase 1 → 82%: reading file (animate towards target while invoke runs)
+                advanceTo(1);
+
+                const bytes = await Promise.race([invoke(command, args), timeoutPromise]);
+
+                if (!bytes) throw new Error("No data received from file");
+                if (bytes.length > 5 * 1024 * 1024) throw new Error("File is too large (>5MB) to open in the editor.");
 
                 console.log(`[FileEditor] Received ${bytes.length} bytes for ${file.name}`);
-                
-                // Safety check for binary files or very large files
-                if (bytes.length > 5 * 1024 * 1024) {
-                    throw new Error("File is too large (>5MB) to open in the editor.");
-                }
 
+                // Phase 2 → 93%: decoding
+                advanceTo(2);
                 const text = new TextDecoder().decode(new Uint8Array(bytes));
                 setContent(text);
                 setLanguage(detectLanguage(file.name));
+
+                // Phase 3 → 100%: animate to completion, then reveal editor
+                advanceToWithDone(3, () => setLoading(false));
             } catch (err) {
                 console.error("Failed to load file:", err);
                 setError(err.message || err.toString());
-            } finally {
                 setLoading(false);
             }
         };
 
         loadFile();
-    }, [file.path, file.name, mode]);
+    }, [file.path, file.name, mode]);  // eslint-disable-line react-hooks/exhaustive-deps
+
+    const handleEditorMount = useCallback(() => {
+        // Monaco is mounted — no-op, loading is dismissed by progress animation
+    }, []);
 
     const handleSave = async (useSudo = false) => {
         setSaving(true);
@@ -135,8 +177,8 @@ export default function FileEditor({ file, mode, onClose, onSaveSuccess }) {
                             onClick={handleSave}
                             disabled={loading || saving}
                         >
-                            {saving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
-                            Save
+                            <Save size={16} className={saving ? "save-spin" : ""} />
+                            {saving ? "Saving..." : "Save"}
                         </button>
                         <button className="close-btn" onClick={onClose}>
                             <X size={20} />
@@ -145,24 +187,40 @@ export default function FileEditor({ file, mode, onClose, onSaveSuccess }) {
                 </div>
 
                 <div className="file-editor-body">
-                    {loading ? (
-                        <div className="editor-loading">
-                            <Loader2 size={40} className="animate-spin text-blue-500" />
-                            <p>Loading {file.name}...</p>
+                    {loading && !error && (
+                        <div className="editor-progress-screen">
+                            <div className="editor-progress-icon">
+                                <FileText size={36} />
+                            </div>
+                            <div className="editor-progress-filename">{file.name}</div>
+                            <div className="editor-progress-bar-wrap">
+                                <div
+                                    className="editor-progress-bar-fill"
+                                    style={{ width: `${progress}%` }}
+                                />
+                            </div>
+                            <div className="editor-progress-meta">
+                                <span className="editor-progress-pct">{progress}%</span>
+                                <span className="editor-progress-label">{phaseLabel}</span>
+                            </div>
                         </div>
-                    ) : error ? (
+                    )}
+                    {error && (
                         <div className="editor-error">
                             <h3>Failed to load file</h3>
                             <p>{error}</p>
                             <button onClick={onClose}>Close</button>
                         </div>
-                    ) : (
+                    )}
+                    <div style={{ height: '100%', visibility: loading || error ? 'hidden' : 'visible' }}>
                         <Editor
                             height="100%"
                             theme="vs-dark"
                             language={language}
                             value={content}
+                            onMount={handleEditorMount}
                             onChange={(value) => setContent(value || "")}
+                            loading={null}
                             options={{
                                 fontSize: 14,
                                 minimap: { enabled: true },
@@ -171,7 +229,7 @@ export default function FileEditor({ file, mode, onClose, onSaveSuccess }) {
                                 padding: { top: 10, bottom: 10 }
                             }}
                         />
-                    )}
+                    </div>
                 </div>
             </div>
         </div>

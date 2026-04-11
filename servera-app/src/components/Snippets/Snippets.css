@@ -2,7 +2,7 @@
     height: 100%;
     display: flex;
     background: #0b0e14;
-    font-family: 'Inter', sans-serif;
+    font-family: var(--font-ui);
     overflow: hidden;
 }
 

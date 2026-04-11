@@ -4,8 +4,9 @@ import { listen } from "@tauri-apps/api/event";
 import {
     Send, X, Loader2, Copy, Sparkles, RotateCcw,
     CheckCircle2, Circle, AlertCircle, Play, StopCircle,
-    Pencil, Trash2, ChevronRight, Bot, Columns2, Rows2,
-    PlusCircle, MessageSquare, History, PanelLeftClose, PanelLeftOpen
+    Pencil, Trash2, ChevronRight, Bot, Columns2,
+    PlusCircle, MessageSquare, History, PanelLeftClose, PanelLeftOpen,
+    Palette, Check
 } from "lucide-react";
 import { MAIN_SESSION_ID } from "../../utils/terminal";
 import "./SmartTerminal.css";
@@ -56,6 +57,19 @@ function parsePlan(content) {
 }
 
 /* ──────────────────────────────────
+   THEMES
+   ────────────────────────────────── */
+
+const THEMES = [
+    { id: "github-dark",  name: "GitHub Dark",    swatch: "#0d1117", accent: "#58a6ff" },
+    { id: "dracula",      name: "Dracula",         swatch: "#282a36", accent: "#bd93f9" },
+    { id: "nord",         name: "Nord",            swatch: "#2e3440", accent: "#88c0d0" },
+    { id: "monokai",      name: "Monokai",         swatch: "#272822", accent: "#a6e22e" },
+    { id: "solarized",    name: "Solarized Dark",  swatch: "#002b36", accent: "#268bd2" },
+    { id: "one-dark",     name: "One Dark",        swatch: "#282c34", accent: "#61afef" },
+];
+
+/* ──────────────────────────────────
    SMART TERMINAL COMPONENT
    ────────────────────────────────── */
 
@@ -85,6 +99,62 @@ export default function SmartTerminal({ xtermRef, onClose, layout, onLayoutChang
     const [sessions, setSessions] = useState([]);
     const [activeSessionId, setActiveSessionId] = useState(null);
     const [sidebarOpen, setSidebarOpen] = useState(true);
+    const [sidebarWidth, setSidebarWidth] = useState(260);
+
+    // Theme
+    const [themeId, setThemeId] = useState(() => localStorage.getItem("opspilot_theme") || "github-dark");
+    const [showThemePicker, setShowThemePicker] = useState(false);
+
+    // Sidebar drag-resize refs
+    const isDraggingRef = useRef(false);
+    const dragStartXRef = useRef(0);
+    const dragStartWidthRef = useRef(260);
+    const SIDEBAR_MIN = 180;
+    const SIDEBAR_MAX = 420;
+    const SIDEBAR_COLLAPSE_AT = 100;
+
+    // Persist theme selection
+    useEffect(() => {
+        localStorage.setItem("opspilot_theme", themeId);
+    }, [themeId]);
+
+    // Sidebar drag-to-resize global mouse handlers
+    useEffect(() => {
+        const handleMouseMove = (e) => {
+            if (!isDraggingRef.current) return;
+            const delta = e.clientX - dragStartXRef.current;
+            const newW = dragStartWidthRef.current + delta;
+            if (newW < SIDEBAR_COLLAPSE_AT) {
+                setSidebarOpen(false);
+            } else {
+                setSidebarOpen(true);
+                setSidebarWidth(Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, newW)));
+            }
+        };
+        const handleMouseUp = () => {
+            if (isDraggingRef.current) {
+                isDraggingRef.current = false;
+                document.body.style.cursor = "";
+                document.body.style.userSelect = "";
+            }
+        };
+        document.addEventListener("mousemove", handleMouseMove);
+        document.addEventListener("mouseup", handleMouseUp);
+        return () => {
+            document.removeEventListener("mousemove", handleMouseMove);
+            document.removeEventListener("mouseup", handleMouseUp);
+        };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    const handleResizerMouseDown = useCallback((e) => {
+        isDraggingRef.current = true;
+        dragStartXRef.current = e.clientX;
+        dragStartWidthRef.current = sidebarOpen ? sidebarWidth : 0;
+        document.body.style.cursor = "col-resize";
+        document.body.style.userSelect = "none";
+        e.preventDefault();
+    }, [sidebarOpen, sidebarWidth]);
 
     // Initial load from localStorage
     useEffect(() => {
@@ -737,9 +807,12 @@ export default function SmartTerminal({ xtermRef, onClose, layout, onLayoutChang
 
     /* ──── MAIN RENDER ──── */
     return (
-        <div className="opspilot-main-wrapper">
+        <div className="opspilot-main-wrapper" data-theme={themeId}>
             {/* Session Sidebar */}
-            <div className={`op-sidebar-panel ${sidebarOpen ? "open" : "collapsed"}`}>
+            <div
+                className={`op-sidebar-panel ${sidebarOpen ? "open" : "collapsed"}`}
+                style={{ width: sidebarOpen ? sidebarWidth : 0 }}
+            >
                 <div className="op-sidebar-header">
                     <History size={14} />
                     <span>Chat History</span>
@@ -770,6 +843,13 @@ export default function SmartTerminal({ xtermRef, onClose, layout, onLayoutChang
                 </div>
             </div>
 
+            {/* Drag Resizer */}
+            <div
+                className="op-sidebar-resizer"
+                onMouseDown={handleResizerMouseDown}
+                title={sidebarOpen ? "Drag to resize or collapse" : "Drag right to open"}
+            />
+
             <div className="opspilot-container">
                 {/* Header */}
                 <div className="op-header">
@@ -784,6 +864,20 @@ export default function SmartTerminal({ xtermRef, onClose, layout, onLayoutChang
                         <span className="op-badge">AI Terminal</span>
                     </div>
                 <div className="op-header-right">
+                    {/* Theme swatches always visible when picker is open */}
+                    {showThemePicker && (
+                        <div className="op-theme-swatches">
+                            {THEMES.map(t => (
+                                <button
+                                    key={t.id}
+                                    className={`op-swatch-btn ${themeId === t.id ? "active" : ""}`}
+                                    style={{ background: t.swatch, borderColor: themeId === t.id ? t.accent : "transparent", boxShadow: themeId === t.id ? `0 0 0 2px ${t.accent}55` : "none" }}
+                                    onClick={() => { setThemeId(t.id); setShowThemePicker(false); }}
+                                    title={t.name}
+                                />
+                            ))}
+                        </div>
+                    )}
                     <div className="op-layout-toggle" style={{ border: 'none' }}>
                         <button
                             className="op-layout-btn"
@@ -795,22 +889,13 @@ export default function SmartTerminal({ xtermRef, onClose, layout, onLayoutChang
                             <span style={{ marginLeft: 4, fontSize: 11, fontWeight: 700 }}>New Chat</span>
                         </button>
                     </div>
-                    <div className="op-layout-toggle">
-                        <button
-                            className={`op-layout-btn ${layout === "side-by-side" ? "active" : ""}`}
-                            onClick={() => onLayoutChange("side-by-side")}
-                            title="Side by Side"
-                        >
-                            <Columns2 size={14} />
-                        </button>
-                        <button
-                            className={`op-layout-btn ${layout === "stacked" ? "active" : ""}`}
-                            onClick={() => onLayoutChange("stacked")}
-                            title="Stacked"
-                        >
-                            <Rows2 size={14} />
-                        </button>
-                    </div>
+                    <button
+                        className={`op-icon-btn ${showThemePicker ? "active" : ""}`}
+                        onClick={() => setShowThemePicker(p => !p)}
+                        title="Change Theme"
+                    >
+                        <Palette size={14} />
+                    </button>
                     <button className="op-icon-btn" onClick={handleReset} title="Reset Session">
                         <RotateCcw size={14} />
                     </button>

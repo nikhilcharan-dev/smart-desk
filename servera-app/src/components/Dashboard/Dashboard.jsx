@@ -88,145 +88,70 @@ export default function Dashboard({ user, ip, profileName }) {
                 });
 
             } else {
-                // Fetch remote stats via SSH
-                // We run a combined script to minimize SSH overhead
-                const combinedScript = `
-                    uptime -p; 
-                    echo "---"; 
-                    free -m; 
-                    echo "---"; 
-                    df -h / | tail -1; 
-                    echo "---"; 
-                    grep PRETTY_NAME /etc/os-release; 
-                    echo "---"; 
-                    cat /proc/stat | grep '^cpu '; 
-                    echo "---"; 
-                    cat /proc/net/dev | grep -E 'eth|en|wl' | head -n 1; 
-                    echo "---"; 
-                    ps -e -o pid,pcpu,pmem,comm --sort=-pcpu | grep -v 'ps -e' | grep -v 'grep' | head -n 6;
-                    echo "---"; 
-                    cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null || echo 'N/A'
-                `;
-
-                const rawOut = await invoke("exec_ssh_command", { sessionId: MAIN_SESSION_ID, command: combinedScript });
-                const blocks = rawOut.split('---').map(s => s.trim());
-
-                if (blocks.length < 8) throw new Error("Incomplete data from VM");
-
-                const [uptimeRaw, freeRaw, dfRaw, osRaw, statRaw, netRaw, psRaw, tempRaw] = blocks;
-
-                // 1. Static OS & Uptime & Disk
-                let os = "Linux VM";
-                if (osRaw.includes("PRETTY_NAME")) os = osRaw.match(/PRETTY_NAME="?([^"\n]+)"?/)?.[1] || os;
-
-                let diskPct = 0;
-                let diskLbl = "0%";
-                if (dfRaw) {
-                    const dfParts = dfRaw.split(/\s+/);
-                    if (dfParts.length >= 5) {
-                        diskPct = parseInt(dfParts[4].replace('%', '')) || 0;
-                        diskLbl = `${diskPct}% (${dfParts[2]} / ${dfParts[1]})`;
-                    }
-                }
-
+                // Fetch remote stats via SSH using standardized metrics
+                const rawMetrics = await invoke("get_standard_metrics", { sessionId: MAIN_SESSION_ID });
+                
+                // 1. Static OS & Uptime
                 setStats({
-                    os,
-                    uptime: uptimeRaw.replace("up ", ""),
-                    diskPct,
-                    disks: [{ mount: "/", pct: diskPct, label: diskLbl }]
+                    os: rawMetrics.os_name,
+                    uptime: rawMetrics.uptime,
+                    diskPct: rawMetrics.disk_usage[0]?.pct || 0,
+                    disks: rawMetrics.disk_usage.map(d => ({
+                        mount: d.mount,
+                        pct: d.pct,
+                        label: `${d.pct}% (${d.used_gb.toFixed(1)}GB / ${d.total_gb.toFixed(1)}GB)`
+                    }))
                 });
 
                 // 2. Memory
-                let memPct = 0;
-                let memUsed = "0MB", memTotal = "0MB";
-                const memLines = freeRaw.split('\n').filter(l => l.includes("Mem:"));
-                if (memLines.length > 0) {
-                    const parts = memLines[0].split(/\s+/);
-                    const total = parseInt(parts[1]) || 1;
-                    const used = parseInt(parts[2]) || 0;
-                    memPct = (used / total) * 100;
-                    memUsed = (used > 1024) ? `${(used / 1024).toFixed(1)}GB` : `${used}MB`;
-                    memTotal = (total > 1024) ? `${(total / 1024).toFixed(1)}GB` : `${total}MB`;
+                const memUsed = (rawMetrics.mem_used_mb > 1024) ? `${(rawMetrics.mem_used_mb / 1024).toFixed(1)}GB` : `${rawMetrics.mem_used_mb}MB`;
+                const memTotal = (rawMetrics.mem_total_mb > 1024) ? `${(rawMetrics.mem_total_mb / 1024).toFixed(1)}GB` : `${rawMetrics.mem_total_mb}MB`;
+
+                // 3. CPU Global (Deltas still handled on frontend for now or using first-hop pcpu)
+                // Note: The standardized metrics return a snapshot.
+                let cpuPct = rawMetrics.cpu_usage;
+                if (cpuPct === 0 && rawMetrics.top_processes.length > 0) {
+                    cpuPct = rawMetrics.top_processes.reduce((a, b) => a + b.cpu_pct, 0) / 4; // normalized approx
                 }
 
-                // 3. CPU Global (from /proc/stat)
-                let cpuPct = 0;
-                if (statRaw) {
-                    const parts = statRaw.split(/\s+/);
-                    const user = parseInt(parts[1]) || 0;
-                    const nice = parseInt(parts[2]) || 0;
-                    const system = parseInt(parts[3]) || 0;
-                    const idle = parseInt(parts[4]) || 0;
-                    const iowait = parseInt(parts[5]) || 0;
-                    const irq = parseInt(parts[6]) || 0;
-                    const softirq = parseInt(parts[7]) || 0;
-                    const steal = parseInt(parts[8]) || 0;
-
-                    const total = user + nice + system + idle + iowait + irq + softirq + steal;
-                    const idleTotal = idle + iowait;
-
-                    const prev = prevCpuRef.current['global'];
-                    if (prev) {
-                        const totalDiff = total - prev.total;
-                        const idleDiff = idleTotal - prev.idle;
-                        if (totalDiff > 0) cpuPct = ((totalDiff - idleDiff) / totalDiff) * 100;
-                    }
-                    prevCpuRef.current['global'] = { total, idle: idleTotal };
-                }
-
-                // 4. Network Bandwidth (RX/TX)
+                // 4. Network Bandwidth deltas
                 let rxSpeed = 0, txSpeed = 0;
-                if (netRaw) {
-                    const parts = netRaw.split(':')[1]?.trim().split(/\s+/) || [];
-                    if (parts.length >= 9) {
-                        const rxBytes = parseInt(parts[0]) || 0;
-                        const txBytes = parseInt(parts[8]) || 0;
-                        const nowMs = Date.now();
-
-                        if (prevNetRef.current) {
-                            const timeDiff = (nowMs - prevNetRef.current.time) / 1000; // in seconds
-                            if (timeDiff > 0) {
-                                rxSpeed = ((rxBytes - prevNetRef.current.rx) / 1024 / 1024) / timeDiff; // MB/s
-                                txSpeed = ((txBytes - prevNetRef.current.tx) / 1024 / 1024) / timeDiff; // MB/s
-                            }
-                        }
-                        prevNetRef.current = { time: nowMs, rx: rxBytes, tx: txBytes };
+                const nowMs = Date.now();
+                if (prevNetRef.current) {
+                    const timeDiff = (nowMs - prevNetRef.current.time) / 1000;
+                    if (timeDiff > 0) {
+                        rxSpeed = ((rawMetrics.net_rx_bytes - prevNetRef.current.rx) / 1024 / 1024) / timeDiff;
+                        txSpeed = ((rawMetrics.net_tx_bytes - prevNetRef.current.tx) / 1024 / 1024) / timeDiff;
                     }
                 }
+                prevNetRef.current = { time: nowMs, rx: rawMetrics.net_rx_bytes, tx: rawMetrics.net_tx_bytes };
 
-                // 5. Temperature (now from combined script)
-                let temp = "N/A";
-                if (tempRaw && tempRaw !== 'N/A') {
-                    const tVal = parseInt(tempRaw);
-                    if (!isNaN(tVal) && tVal > 0) {
-                        temp = (tVal / 1000).toFixed(1) + "°C";
-                    }
-                }
-
-                // 6. Top Processes (already excludes ps/grep from combined script)
-                const procs = psRaw.split('\n').map(l => l.trim()).filter(l => l).slice(1).map((line, i) => {
-                    const p = line.split(/\s+/);
-                    return { id: i, pid: p[0], cpu: parseFloat(p[1]), mem: parseFloat(p[2]), name: p[3] };
-                });
-                setTopProcs(procs);
-
-                // Update Live & History
+                // 5. Update Life & History
                 setLiveStats({
                     cpuPct: Math.round(cpuPct),
-                    memPct: Math.round(memPct),
+                    memPct: Math.round(rawMetrics.mem_pct),
                     memUsedStr: memUsed,
                     memTotalStr: memTotal,
                     rxSpeed: Math.max(0, rxSpeed),
                     txSpeed: Math.max(0, txSpeed),
-                    temp
+                    temp: rawMetrics.temp
                 });
 
                 const nowTime = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
                 setHistory(prev => {
-                    const newHist = [...prev, { time: nowTime, cpu: Math.round(cpuPct), ram: Math.round(memPct) }];
+                    const newHist = [...prev, { time: nowTime, cpu: Math.round(cpuPct), ram: Math.round(rawMetrics.mem_pct) }];
                     if (newHist.length > 20) newHist.shift();
                     return newHist;
                 });
+
+                // 6. Top Processes
+                setTopProcs(rawMetrics.top_processes.map((p, i) => ({
+                    id: i,
+                    pid: p.pid,
+                    cpu: p.cpu_pct,
+                    mem: p.mem_pct,
+                    name: p.name
+                })));
             }
         } catch (err) {
             console.error("Failed to fetch stats:", err);

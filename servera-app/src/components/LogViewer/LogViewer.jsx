@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { MAIN_SESSION_ID } from '../../utils/terminal';
-import { ScrollText, RefreshCw, Search, X, Pause, Play, Trash2, Download, Bot, Loader2 } from 'lucide-react';
+import { ScrollText, RefreshCw, Search, X, Pause, Play, Trash2, Bot, Loader2, FolderOpen, Folder, File, ArrowUp, ChevronRight } from 'lucide-react';
 import './LogViewer.css';
 
 const LOG_PRESETS = [
@@ -26,16 +26,151 @@ function classifyLine(line) {
     return '';
 }
 
-export default function LogViewer() {
+function RemoteFilePicker({ onSelect, onClose }) {
+    const [currentPath, setCurrentPath] = useState('/');
+    const [inputPath, setInputPath] = useState('/');
+    const [entries, setEntries] = useState([]);
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState(null);
+    const [selected, setSelected] = useState(null);
+
+    const loadDir = useCallback(async (path) => {
+        setLoading(true);
+        setError(null);
+        setSelected(null);
+        try {
+            const res = await invoke('sftp_list', { sessionId: MAIN_SESSION_ID, path: path === '/' ? '/' : path });
+            const dirs = res.filter(e => e.is_dir).sort((a, b) => a.name.localeCompare(b.name));
+            const files = res.filter(e => !e.is_dir).sort((a, b) => a.name.localeCompare(b.name));
+            setEntries([...dirs, ...files]);
+        } catch (err) {
+            setError(String(err));
+        } finally {
+            setLoading(false);
+        }
+    }, []);
+
+    useEffect(() => {
+        loadDir(currentPath);
+        setInputPath(currentPath);
+    }, [currentPath, loadDir]);
+
+    const goUp = () => {
+        if (currentPath === '/') return;
+        const parts = currentPath.split('/').filter(p => p);
+        parts.pop();
+        setCurrentPath(parts.length === 0 ? '/' : '/' + parts.join('/'));
+    };
+
+    const breadcrumbs = (() => {
+        if (currentPath === '/') return [{ label: '/', path: '/' }];
+        const parts = currentPath.split('/').filter(p => p);
+        const crumbs = [{ label: '/', path: '/' }];
+        let acc = '';
+        for (const p of parts) {
+            acc += '/' + p;
+            crumbs.push({ label: p, path: acc });
+        }
+        return crumbs;
+    })();
+
+    return (
+        <div className="rfp-overlay" onClick={onClose}>
+            <div className="rfp-modal" onClick={e => e.stopPropagation()}>
+                <div className="rfp-header">
+                    <FolderOpen size={16} className="rfp-icon" />
+                    <span className="rfp-title">Browse Remote Files</span>
+                    <button className="rfp-close" onClick={onClose}><X size={14} /></button>
+                </div>
+
+                <div className="rfp-nav">
+                    <button className="rfp-up-btn" onClick={goUp} disabled={currentPath === '/'} title="Go up">
+                        <ArrowUp size={14} />
+                    </button>
+                    <div className="rfp-breadcrumbs">
+                        {breadcrumbs.map((crumb, i) => (
+                            <span key={crumb.path} className="rfp-crumb">
+                                {i > 0 && <ChevronRight size={10} className="rfp-crumb-sep" />}
+                                <button className={`rfp-crumb-btn ${i === breadcrumbs.length - 1 ? 'active' : ''}`}
+                                    onClick={() => setCurrentPath(crumb.path)}>
+                                    {crumb.label}
+                                </button>
+                            </span>
+                        ))}
+                    </div>
+                    <input
+                        className="rfp-path-input"
+                        value={inputPath}
+                        onChange={e => setInputPath(e.target.value)}
+                        onKeyDown={e => e.key === 'Enter' && setCurrentPath(inputPath)}
+                        spellCheck={false}
+                    />
+                </div>
+
+                <div className="rfp-list">
+                    {loading && <div className="rfp-status">Loading...</div>}
+                    {error && <div className="rfp-status rfp-error">{error}</div>}
+                    {!loading && !error && entries.length === 0 && (
+                        <div className="rfp-status">Empty directory</div>
+                    )}
+                    {entries.map(entry => (
+                        <div
+                            key={entry.path}
+                            className={`rfp-entry ${entry.is_dir ? 'dir' : 'file'} ${selected?.path === entry.path ? 'selected' : ''}`}
+                            onClick={() => entry.is_dir ? setCurrentPath(entry.path) : setSelected(entry)}
+                            onDoubleClick={() => !entry.is_dir && onSelect(entry.path)}
+                            title={entry.path}
+                        >
+                            {entry.is_dir
+                                ? <Folder size={14} className="rfp-entry-icon dir" />
+                                : <File size={14} className="rfp-entry-icon file" />}
+                            <span className="rfp-entry-name">{entry.name}</span>
+                        </div>
+                    ))}
+                </div>
+
+                {selected && (
+                    <div className="rfp-selected-bar">
+                        <File size={12} />
+                        <span className="rfp-selected-path">{selected.path}</span>
+                    </div>
+                )}
+
+                <div className="rfp-footer">
+                    <button className="rfp-btn secondary" onClick={onClose}>Cancel</button>
+                    <button
+                        className="rfp-btn primary"
+                        disabled={!selected}
+                        onClick={() => selected && onSelect(selected.path)}
+                    >
+                        Open
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+export default function LogViewer({ profileId, ip, user }) {
+    const storageKey = profileId ? `logTabs:profile:${profileId}` : `logTabs:${user}@${ip}`;
+
     const [lines, setLines] = useState([]);
     const [loading, setLoading] = useState(false);
     const [logPath, setLogPath] = useState('/var/log/syslog');
     const [customPath, setCustomPath] = useState('');
+    const [customTabs, setCustomTabs] = useState(() => {
+        try {
+            const saved = localStorage.getItem(storageKey);
+            if (saved) return JSON.parse(saved);
+        } catch { /* ignore */ }
+        return [];
+    });
     const [lineCount, setLineCount] = useState(100);
     const [filter, setFilter] = useState('');
     const [autoScroll] = useState(true);
     const [paused, setPaused] = useState(false);
     const [aiAnalysis, setAiAnalysis] = useState(null); // { text: '', loading: false, error: null }
+    const [showPicker, setShowPicker] = useState(false);
     const listRef = useRef(null);
     const pausedLinesRef = useRef([]);
 
@@ -75,6 +210,10 @@ export default function LogViewer() {
         }
     }, [lines, autoScroll, paused]);
 
+    useEffect(() => {
+        localStorage.setItem(storageKey, JSON.stringify(customTabs));
+    }, [customTabs, storageKey]);
+
     const handleRefresh = () => {
         setPaused(false);
         fetchLog(logPath, lineCount);
@@ -93,10 +232,28 @@ export default function LogViewer() {
         setCustomPath('');
     };
 
+    const addCustomTab = (path) => {
+        const label = path.split('/').filter(Boolean).pop() || path;
+        setCustomTabs(prev => {
+            if (prev.some(t => t.path === path)) return prev;
+            return [...prev, { label, path }];
+        });
+        setLogPath(path);
+        setCustomPath('');
+    };
+
     const handleCustomSubmit = () => {
-        if (customPath.trim()) {
-            setLogPath(customPath.trim());
-        }
+        if (customPath.trim()) addCustomTab(customPath.trim());
+    };
+
+    const handlePickerSelect = (path) => {
+        setShowPicker(false);
+        addCustomTab(path);
+    };
+
+    const removeCustomTab = (path) => {
+        setCustomTabs(prev => prev.filter(t => t.path !== path));
+        if (logPath === path) setLogPath(LOG_PRESETS[0].path);
     };
 
     const handleAnalyzeLogs = async () => {
@@ -160,6 +317,24 @@ ${contextLines}`;
                             {preset.label}
                         </button>
                     ))}
+                    {customTabs.map(tab => (
+                        <span key={tab.path} className={`lv-preset-btn lv-custom-tab ${logPath === tab.path ? 'active' : ''}`}>
+                            <button
+                                className="lv-custom-tab-label"
+                                onClick={() => { setLogPath(tab.path); setCustomPath(''); }}
+                                title={tab.path}
+                            >
+                                {tab.label}
+                            </button>
+                            <button
+                                className="lv-custom-tab-remove"
+                                onClick={() => removeCustomTab(tab.path)}
+                                title="Remove"
+                            >
+                                <X size={9} />
+                            </button>
+                        </span>
+                    ))}
                 </div>
 
                 <div className="lv-toolbar">
@@ -170,6 +345,9 @@ ${contextLines}`;
                             onChange={e => setCustomPath(e.target.value)}
                             onKeyDown={e => e.key === 'Enter' && handleCustomSubmit()}
                         />
+                        <button className="lv-browse-btn" onClick={() => setShowPicker(true)} title="Browse remote filesystem">
+                            <FolderOpen size={13} />
+                        </button>
                         <button onClick={handleCustomSubmit} disabled={!customPath.trim()}>Go</button>
                     </div>
                     <div className="lv-filter">
@@ -245,6 +423,13 @@ ${contextLines}`;
                 <span className={`lv-status-dot ${paused ? 'paused' : 'live'}`} />
                 <span>{paused ? 'Paused' : 'Live'}</span>
             </div>
+
+            {showPicker && (
+                <RemoteFilePicker
+                    onSelect={handlePickerSelect}
+                    onClose={() => setShowPicker(false)}
+                />
+            )}
         </div>
     );
 }
