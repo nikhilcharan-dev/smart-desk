@@ -18,6 +18,11 @@
 
   --accent-warning: #ffc107;
   --radius: 14px;
+
+  /* ── Typography ── */
+  --font-ui:      'Space Grotesk', system-ui, -apple-system, sans-serif;
+  --font-heading: 'Oxanium', system-ui, sans-serif;
+  --font-mono:    'JetBrains Mono', 'Courier New', monospace;
 }
 
 /* DnD: disable pointer-events on file items during drag */
@@ -44,9 +49,30 @@ body {
   background: radial-gradient(1200px 600px at 50% -200px,
       #1a1f32,
       var(--bg-main));
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
-    sans-serif;
+  font-family: var(--font-ui);
   color: var(--text-main);
+}
+
+/* =========================
+   HEADING FONT — OXANIUM
+   Applied to all view/page titles across every component
+   ========================= */
+.login-title,
+.loading-text,
+.handle-title,
+.ah-title,
+.dm-header h2,
+.am-header h2,
+.um-header h2,
+.pm-title,
+.lv-title,
+.op-title,
+.ps-title,
+.termhub__title,
+.tp__title,
+.sn-sidebar-title,
+.sh-panel-header h2 {
+  font-family: var(--font-heading);
 }
 
 /* =========================

@@ -3,7 +3,7 @@
   display: flex;
   background: #0b0e14;
   overflow: hidden;
-  font-family: 'Inter', sans-serif;
+  font-family: var(--font-ui);
 }
 
 .drag-underlay {
@@ -93,6 +93,8 @@ body.dnd-active .drag-underlay {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
+  overflow: hidden;
   position: relative;
   background: #0b0e14;
 }
@@ -110,6 +112,8 @@ body.dnd-active .drag-underlay {
   background: #0b0e14;
   display: flex;
   flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
   transition: height 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   border-top: 1px solid #1f2532;
   box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.3);
@@ -147,21 +151,6 @@ body.dnd-active .drag-underlay {
   order: 1;
 }
 
-/* ── Stacked ── */
-.smart-terminal-layout.stacked {
-  flex-direction: column;
-}
-
-.smart-terminal-layout.stacked .terminal-drawer {
-  order: -1;
-  border-top: none;
-  border-bottom: 1px solid #1f2532;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
-}
-
-.smart-terminal-layout.stacked .view-container {
-  order: 1;
-}
 
 /* Both modes: remove fixed heights when inline flex handles sizing */
 .smart-terminal-layout .terminal-drawer.open.smart-terminal-mode {
@@ -248,14 +237,6 @@ body.dnd-active .drag-underlay {
   background: #58a6ff;
 }
 
-/* Stacked: horizontal bar, drags vertically */
-.split-resizer.stacked {
-  order: 0;
-  height: 5px;
-  width: 100%;
-  cursor: row-resize;
-}
-
 /* Side-by-side: vertical bar, drags horizontally */
 .split-resizer.side-by-side {
   order: 0;
@@ -270,13 +251,6 @@ body.dnd-active .drag-underlay {
   position: absolute;
 }
 
-.split-resizer.stacked::after {
-  left: 0;
-  right: 0;
-  top: -4px;
-  bottom: -4px;
-}
-
 .split-resizer.side-by-side::after {
   top: 0;
   bottom: 0;
@@ -286,6 +260,8 @@ body.dnd-active .drag-underlay {
 
 .terminal-container {
   flex: 1;
+  min-height: 0;
+  overflow: hidden;
   background: #0b0e14;
   padding: 4px 0 0 4px;
 }
@@ -403,4 +379,21 @@ body.dnd-active .drag-underlay {
     height: 60%;
     /* More space for terminal when open on mobile */
   }
+}
+
+/* Terminal theme swatch dots */
+.term-swatch-btn {
+  border-radius: 50%;
+  flex-shrink: 0;
+  cursor: pointer;
+  padding: 0;
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+
+.term-swatch-btn:hover {
+  transform: scale(1.35);
+}
+
+.term-swatch-btn.active {
+  transform: scale(1.25);
 }
