@@ -1,0 +1,230 @@
+.tm-container {
+    padding: 32px 40px;
+    height: 100%;
+    overflow-y: auto;
+    background: #0b0e14;
+    font-family: var(--font-ui);
+    color: #e5e7eb;
+}
+
+.tm-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 24px;
+}
+
+.tm-header h2 {
+    margin: 0 0 4px 0;
+    font-size: 24px;
+    font-weight: 700;
+    color: #fff;
+}
+
+.tm-subtitle {
+    margin: 0;
+    font-size: 13px;
+    color: #9ca3af;
+}
+
+.tm-form {
+    background: #11141d;
+    border: 1px solid #1f2532;
+    border-radius: 12px;
+    padding: 20px 24px;
+    margin-bottom: 24px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    align-items: flex-end;
+}
+
+.tm-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.tm-field label {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #6b7280;
+}
+
+.tm-field input, .tm-field select {
+    background: #0b0e14;
+    border: 1px solid #1f2532;
+    border-radius: 6px;
+    color: #e5e7eb;
+    font-size: 12px;
+    font-family: 'JetBrains Mono', monospace;
+    padding: 8px 12px;
+    outline: none;
+    transition: border-color 0.15s;
+}
+
+.tm-field input:focus, .tm-field select:focus {
+    border-color: rgba(79, 156, 255, 0.4);
+}
+
+.tm-field input::placeholder {
+    color: #4b5563;
+}
+
+.tm-create-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(79, 156, 255, 0.12);
+    border: 1px solid rgba(79, 156, 255, 0.3);
+    color: #4f9cff;
+    padding: 8px 18px;
+    border-radius: 8px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+    height: 36px;
+}
+
+.tm-create-btn:hover {
+    background: rgba(79, 156, 255, 0.2);
+    border-color: rgba(79, 156, 255, 0.5);
+}
+
+.tm-create-btn:disabled {
+    opacity: 0.4;
+    cursor: default;
+}
+
+/* Tunnel cards */
+.tm-card {
+    background: #11141d;
+    border: 1px solid #1f2532;
+    border-radius: 12px;
+    padding: 24px;
+}
+
+.tm-card h3 {
+    margin: 0 0 16px 0;
+    font-size: 16px;
+    font-weight: 600;
+}
+
+.tm-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 12px;
+}
+
+.tm-tunnel-item {
+    display: flex;
+    align-items: center;
+    background: #0b0e14;
+    border: 1px solid #1f2532;
+    border-radius: 8px;
+    padding: 14px 18px;
+    gap: 14px;
+    transition: border-color 0.15s;
+}
+
+.tm-tunnel-item:hover {
+    border-color: #374151;
+}
+
+.tm-tunnel-icon {
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.tm-tunnel-icon.local {
+    background: rgba(16, 185, 129, 0.12);
+    color: #10b981;
+}
+
+.tm-tunnel-icon.dynamic {
+    background: rgba(167, 139, 250, 0.12);
+    color: #a78bfa;
+}
+
+.tm-tunnel-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.tm-tunnel-label {
+    font-weight: 600;
+    font-size: 13px;
+    color: #f3f4f6;
+    margin-bottom: 2px;
+}
+
+.tm-tunnel-detail {
+    font-size: 11px;
+    color: #6b7280;
+    font-family: 'JetBrains Mono', monospace;
+}
+
+.tm-tunnel-badge {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    padding: 2px 8px;
+    border-radius: 4px;
+}
+
+.tm-tunnel-badge.local {
+    background: rgba(16, 185, 129, 0.12);
+    color: #10b981;
+}
+
+.tm-tunnel-badge.dynamic {
+    background: rgba(167, 139, 250, 0.12);
+    color: #a78bfa;
+}
+
+.tm-close-btn {
+    background: transparent;
+    border: none;
+    color: #6b7280;
+    padding: 6px;
+    border-radius: 6px;
+    cursor: pointer;
+    display: flex;
+    transition: all 0.15s;
+}
+
+.tm-close-btn:hover {
+    background: rgba(239, 68, 68, 0.1);
+    color: #ef4444;
+}
+
+.tm-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 48px 20px;
+    color: #4b5563;
+    font-size: 13px;
+    gap: 8px;
+}
+
+.tm-error {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 16px;
+    border-radius: 8px;
+    margin-bottom: 16px;
+    font-size: 13px;
+    background: rgba(239, 68, 68, 0.1);
+    border: 1px solid rgba(239, 68, 68, 0.2);
+    color: #ef4444;
+}

@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { MAIN_SESSION_ID } from '../../utils/terminal';
-import { ScrollText, RefreshCw, Search, X, Pause, Play, Trash2, Bot, Loader2, FolderOpen, Folder, File, ArrowUp, ChevronRight } from 'lucide-react';
+import { ScrollText, RefreshCw, Search, X, Pause, Play, Trash2, Bot, Loader2, FolderOpen, Folder, File, ArrowUp, ChevronRight, Radio, Square } from 'lucide-react';
 import './LogViewer.css';
 
 const LOG_PRESETS = [
@@ -151,7 +151,7 @@ function RemoteFilePicker({ onSelect, onClose }) {
     );
 }
 
-export default function LogViewer({ profileId, ip, user }) {
+export default function LogViewer({ profileId, ip, user, port, password, privateKey, proxyJump }) {
     const storageKey = profileId ? `logTabs:profile:${profileId}` : `logTabs:${user}@${ip}`;
 
     const [lines, setLines] = useState([]);
@@ -169,10 +169,78 @@ export default function LogViewer({ profileId, ip, user }) {
     const [filter, setFilter] = useState('');
     const [autoScroll] = useState(true);
     const [paused, setPaused] = useState(false);
-    const [aiAnalysis, setAiAnalysis] = useState(null); // { text: '', loading: false, error: null }
+    const [aiAnalysis, setAiAnalysis] = useState(null);
     const [showPicker, setShowPicker] = useState(false);
+
+    // Streaming state
+    const [streaming, setStreaming] = useState(false);
+    const streamIdRef = useRef(null);
+    const streamUnlistenRef = useRef(null);
+    const MAX_STREAM_LINES = 2000;
+
     const listRef = useRef(null);
     const pausedLinesRef = useRef([]);
+
+    // Stop any active stream
+    const stopStream = useCallback(async () => {
+        if (streamIdRef.current) {
+            try { await invoke('stop_log_stream', { streamId: streamIdRef.current }); } catch {}
+            streamIdRef.current = null;
+        }
+        if (streamUnlistenRef.current) {
+            streamUnlistenRef.current();
+            streamUnlistenRef.current = null;
+        }
+        setStreaming(false);
+    }, []);
+
+    // Start a live stream for the current log path
+    const startStream = useCallback(async (path) => {
+        await stopStream();
+        const sid = `logstream-${Date.now()}`;
+        streamIdRef.current = sid;
+        setStreaming(true);
+
+        // Listen for stream data
+        const unlisten = await listen(`log-stream:${sid}`, (event) => {
+            const data = event.payload;
+            if (data === '__EOF__') {
+                setStreaming(false);
+                return;
+            }
+            const newLines = data.split('\n').filter(l => l.length > 0);
+            if (newLines.length > 0) {
+                setLines(prev => {
+                    const combined = [...prev, ...newLines];
+                    return combined.length > MAX_STREAM_LINES
+                        ? combined.slice(-MAX_STREAM_LINES)
+                        : combined;
+                });
+            }
+        });
+        streamUnlistenRef.current = unlisten;
+
+        try {
+            await invoke('start_log_stream', {
+                sessionId: MAIN_SESSION_ID,
+                streamId: sid,
+                logPath: path,
+                ip, user,
+                port: port || 22,
+                password: password || null,
+                privateKey: privateKey || null,
+                proxyJump: proxyJump || null,
+            });
+        } catch (err) {
+            setLines(prev => [...prev, `Stream error: ${err}`]);
+            setStreaming(false);
+        }
+    }, [ip, user, port, password, privateKey, proxyJump, stopStream]);
+
+    // Cleanup stream on unmount or path change
+    useEffect(() => {
+        return () => { stopStream(); };
+    }, [stopStream]);
 
     const fetchLog = useCallback(async (path, count) => {
         setLoading(true);
@@ -201,8 +269,10 @@ export default function LogViewer({ profileId, ip, user }) {
     }, [paused]);
 
     useEffect(() => {
-        fetchLog(logPath, lineCount);
-    }, [logPath, lineCount, fetchLog]);
+        if (!streaming) {
+            fetchLog(logPath, lineCount);
+        }
+    }, [logPath, lineCount, fetchLog, streaming]);
 
     useEffect(() => {
         if (autoScroll && listRef.current && !paused) {
@@ -216,7 +286,17 @@ export default function LogViewer({ profileId, ip, user }) {
 
     const handleRefresh = () => {
         setPaused(false);
+        if (streaming) { stopStream(); }
         fetchLog(logPath, lineCount);
+    };
+
+    const handleToggleStream = () => {
+        if (streaming) {
+            stopStream();
+            fetchLog(logPath, lineCount);
+        } else {
+            startStream(logPath);
+        }
     };
 
     const handlePause = () => {
@@ -366,6 +446,13 @@ ${contextLines}`;
                         <option value={500}>500 lines</option>
                         <option value={1000}>1000 lines</option>
                     </select>
+                    <button
+                        className={`lv-btn lv-stream-btn ${streaming ? 'streaming' : ''}`}
+                        onClick={handleToggleStream}
+                        title={streaming ? 'Stop Live Stream (tail -f)' : 'Start Live Stream (tail -f)'}
+                    >
+                        {streaming ? <Square size={14} /> : <Radio size={14} />}
+                    </button>
                     <button className={`lv-btn ${paused ? 'active' : ''}`} onClick={handlePause} title={paused ? 'Resume' : 'Pause'}>
                         {paused ? <Play size={14} /> : <Pause size={14} />}
                     </button>
@@ -420,8 +507,9 @@ ${contextLines}`;
 
             <div className="lv-status">
                 <span className="lv-path-display">{logPath === '__journalctl__' ? 'journalctl' : logPath}</span>
-                <span className={`lv-status-dot ${paused ? 'paused' : 'live'}`} />
-                <span>{paused ? 'Paused' : 'Live'}</span>
+                {streaming && <span className="lv-stream-badge">STREAMING</span>}
+                <span className={`lv-status-dot ${streaming ? 'streaming' : paused ? 'paused' : 'live'}`} />
+                <span>{streaming ? 'tail -f' : paused ? 'Paused' : 'Polling'}</span>
             </div>
 
             {showPicker && (

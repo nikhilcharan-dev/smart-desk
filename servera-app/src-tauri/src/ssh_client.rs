@@ -49,6 +49,7 @@ fn shell_escape(s: &str) -> String {
 
 
 
+
 impl SshConnection {
     pub fn new(
         ip: &str, 
@@ -141,21 +142,42 @@ impl<'a> ssh2::KeyboardInteractivePrompt for MfaPrompter<'a> {
 }
 
 fn authenticate_session(
-    sess: &mut Session, 
-    user: &str, 
-    password: Option<&str>, 
+    sess: &mut Session,
+    user: &str,
+    password: Option<&str>,
     private_key: Option<&str>,
     app: &AppHandle,
     session_id: &str
 ) -> Result<(), String> {
     let mut authenticated = false;
 
-    if let Some(key_path) = private_key {
-        if sess.userauth_pubkey_file(user, None, Path::new(key_path), None).is_ok() {
-            authenticated = true;
+    // 1. Try ssh-agent / Pageant first (covers hardware keys like YubiKey and SSH certificates)
+    if !authenticated {
+        if let Ok(mut agent) = sess.agent() {
+            if agent.connect().is_ok() {
+                if agent.list_identities().is_ok() {
+                    for identity in agent.identities().unwrap_or_default() {
+                        if agent.userauth(user, &identity).is_ok() {
+                            authenticated = true;
+                            break;
+                        }
+                    }
+                }
+                let _ = agent.disconnect();
+            }
         }
     }
 
+    // 2. Explicit private key file
+    if !authenticated {
+        if let Some(key_path) = private_key {
+            if sess.userauth_pubkey_file(user, None, Path::new(key_path), None).is_ok() {
+                authenticated = true;
+            }
+        }
+    }
+
+    // 3. Password auth
     if !authenticated {
         if let Some(pwd) = password {
             if sess.userauth_password(user, pwd).is_ok() {
@@ -164,6 +186,7 @@ fn authenticate_session(
         }
     }
 
+    // 4. Keyboard-interactive (MFA / 2FA)
     if !authenticated {
         let auth_methods = sess.auth_methods(user).unwrap_or_default();
         if auth_methods.contains("keyboard-interactive") {
@@ -637,6 +660,313 @@ impl SshExecConn {
         }));
         Ok(())
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Log Streaming (tail -f / journalctl -f over persistent SSH channels)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Spawn a thread that reads from a log stream channel and emits events
+pub fn spawn_log_reader(
+    stream_id: String,
+    channel: Arc<Mutex<Option<Channel>>>,
+    stop_flag: Arc<std::sync::atomic::AtomicBool>,
+    app_handle: AppHandle,
+) {
+    thread::spawn(move || {
+        let mut buf = [0u8; READ_BUF_SIZE];
+        let event_name = format!("log-stream:{}", stream_id);
+
+        loop {
+            if stop_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                break;
+            }
+
+            let mut guard = match channel.lock() {
+                Ok(g) => g,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+
+            if let Some(ch) = guard.as_mut() {
+                match ch.read(&mut buf) {
+                    Ok(n) if n > 0 => {
+                        let data = String::from_utf8_lossy(&buf[..n]).to_string();
+                        let _ = app_handle.emit(&event_name, data);
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        if e.kind() != std::io::ErrorKind::WouldBlock {
+                            let _ = app_handle.emit(&event_name, "__EOF__");
+                            break;
+                        }
+                    }
+                }
+            } else {
+                break;
+            }
+
+            drop(guard);
+            thread::sleep(Duration::from_millis(50));
+        }
+    });
+}
+
+/// Open a persistent SSH channel running a streaming command.
+/// Returns the session + channel wrapped for use with spawn_log_reader.
+pub fn open_stream_channel(
+    ip: &str,
+    user: &str,
+    port: u16,
+    password: Option<&str>,
+    private_key: Option<&str>,
+    proxy_jump: Option<&str>,
+    command: &str,
+    app: &AppHandle,
+    session_id: &str,
+) -> Result<(Session, Channel), String> {
+    let mut sess = Session::new().map_err(|e| format!("Failed to create session: {}", e))?;
+    establish_session(&mut sess, ip, port, user, password, private_key, proxy_jump, app, session_id)?;
+    sess.set_blocking(true);
+
+    let mut channel = sess.channel_session().map_err(|e| e.to_string())?;
+    channel.request_pty("xterm-256color", None, Some((200, 50, 0, 0))).map_err(|e| e.to_string())?;
+    channel.exec(command).map_err(|e| e.to_string())?;
+
+    sess.set_blocking(false);
+    Ok((sess, channel))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SSH Tunnel Management (Port Forwards & SOCKS Proxy)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Represents an active SSH tunnel
+pub struct SshTunnel {
+    pub stop_flag: Arc<std::sync::atomic::AtomicBool>,
+    pub local_port: u16,
+    pub remote_host: String,
+    pub remote_port: u16,
+    pub tunnel_type: String,
+}
+
+/// Start a local port forward (-L): binds local_port, forwards to remote_host:remote_port through SSH
+pub fn start_local_forward(
+    ip: &str,
+    user: &str,
+    port: u16,
+    password: Option<&str>,
+    private_key: Option<&str>,
+    proxy_jump: Option<&str>,
+    local_port: u16,
+    remote_host: &str,
+    remote_port: u16,
+    app: &AppHandle,
+    session_id: &str,
+) -> Result<SshTunnel, String> {
+    let mut sess = Session::new().map_err(|e| e.to_string())?;
+    establish_session(&mut sess, ip, port, user, password, private_key, proxy_jump, app, session_id)?;
+    sess.set_blocking(true);
+
+    let listener = std::net::TcpListener::bind(format!("127.0.0.1:{}", local_port))
+        .map_err(|e| format!("Cannot bind local port {}: {}", local_port, e))?;
+    listener.set_nonblocking(true).map_err(|e| e.to_string())?;
+
+    let stop_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = stop_flag.clone();
+    let rh = remote_host.to_string();
+    let rp = remote_port;
+    let sess = Arc::new(Mutex::new(sess));
+
+    thread::spawn(move || {
+        while !flag.load(std::sync::atomic::Ordering::Relaxed) {
+            match listener.accept() {
+                Ok((client, _)) => {
+                    let sess_clone = sess.clone();
+                    let rh = rh.clone();
+                    let flag = flag.clone();
+                    thread::spawn(move || {
+                        let guard = match sess_clone.lock() {
+                            Ok(g) => g,
+                            Err(p) => p.into_inner(),
+                        };
+                        if let Ok(channel) = guard.channel_direct_tcpip(&rh, rp, None) {
+                            drop(guard);
+                            let mut client_reader = match client.try_clone() {
+                                Ok(c) => c,
+                                Err(_) => return,
+                            };
+                            let mut client_writer = client;
+                            let mut chan_reader = channel;
+                            let mut chan_writer = chan_reader.clone();
+
+                            let flag2 = flag.clone();
+                            let t1 = thread::spawn(move || {
+                                let mut buf = [0u8; 8192];
+                                loop {
+                                    if flag2.load(std::sync::atomic::Ordering::Relaxed) { break; }
+                                    match client_reader.read(&mut buf) {
+                                        Ok(0) => break,
+                                        Ok(n) => { if chan_writer.write_all(&buf[..n]).is_err() { break; } }
+                                        Err(_) => break,
+                                    }
+                                }
+                            });
+
+                            let mut buf = [0u8; 8192];
+                            loop {
+                                if flag.load(std::sync::atomic::Ordering::Relaxed) { break; }
+                                match chan_reader.read(&mut buf) {
+                                    Ok(0) => break,
+                                    Ok(n) => { if client_writer.write_all(&buf[..n]).is_err() { break; } }
+                                    Err(_) => break,
+                                }
+                            }
+                            let _ = t1.join();
+                        }
+                    });
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(100));
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    Ok(SshTunnel {
+        stop_flag,
+        local_port,
+        remote_host: remote_host.to_string(),
+        remote_port,
+        tunnel_type: "local".to_string(),
+    })
+}
+
+/// Start a dynamic SOCKS5 proxy (-D): binds local_port as a SOCKS5 proxy through SSH
+pub fn start_dynamic_forward(
+    ip: &str,
+    user: &str,
+    port: u16,
+    password: Option<&str>,
+    private_key: Option<&str>,
+    proxy_jump: Option<&str>,
+    local_port: u16,
+    app: &AppHandle,
+    session_id: &str,
+) -> Result<SshTunnel, String> {
+    let mut sess = Session::new().map_err(|e| e.to_string())?;
+    establish_session(&mut sess, ip, port, user, password, private_key, proxy_jump, app, session_id)?;
+    sess.set_blocking(true);
+
+    let listener = std::net::TcpListener::bind(format!("127.0.0.1:{}", local_port))
+        .map_err(|e| format!("Cannot bind SOCKS port {}: {}", local_port, e))?;
+    listener.set_nonblocking(true).map_err(|e| e.to_string())?;
+
+    let stop_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = stop_flag.clone();
+    let sess = Arc::new(Mutex::new(sess));
+
+    thread::spawn(move || {
+        while !flag.load(std::sync::atomic::Ordering::Relaxed) {
+            match listener.accept() {
+                Ok((mut client, _)) => {
+                    let sess_clone = sess.clone();
+                    let flag = flag.clone();
+                    thread::spawn(move || {
+                        // Minimal SOCKS5 handshake
+                        let mut buf = [0u8; 512];
+                        // Read greeting
+                        if client.read(&mut buf).map_or(true, |n| n < 3 || buf[0] != 0x05) { return; }
+                        // Reply: no auth required
+                        if client.write_all(&[0x05, 0x00]).is_err() { return; }
+
+                        // Read connect request
+                        let n = match client.read(&mut buf) {
+                            Ok(n) if n >= 7 && buf[0] == 0x05 && buf[1] == 0x01 => n,
+                            _ => return,
+                        };
+
+                        let (dest_host, dest_port) = match buf[3] {
+                            0x01 => {
+                                if n < 10 { return; }
+                                let host = format!("{}.{}.{}.{}", buf[4], buf[5], buf[6], buf[7]);
+                                let port = ((buf[8] as u16) << 8) | buf[9] as u16;
+                                (host, port)
+                            }
+                            0x03 => {
+                                let len = buf[4] as usize;
+                                if n < 5 + len + 2 { return; }
+                                let host = String::from_utf8_lossy(&buf[5..5+len]).to_string();
+                                let port = ((buf[5+len] as u16) << 8) | buf[5+len+1] as u16;
+                                (host, port)
+                            }
+                            _ => return,
+                        };
+
+                        let guard = match sess_clone.lock() {
+                            Ok(g) => g,
+                            Err(p) => p.into_inner(),
+                        };
+                        match guard.channel_direct_tcpip(&dest_host, dest_port, None) {
+                            Ok(channel) => {
+                                drop(guard);
+                                let reply = [0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0];
+                                if client.write_all(&reply).is_err() { return; }
+
+                                let mut client_reader = match client.try_clone() {
+                                    Ok(c) => c,
+                                    Err(_) => return,
+                                };
+                                let mut client_writer = client;
+                                let mut chan_reader = channel;
+                                let mut chan_writer = chan_reader.clone();
+
+                                let flag2 = flag.clone();
+                                let t1 = thread::spawn(move || {
+                                    let mut buf = [0u8; 8192];
+                                    loop {
+                                        if flag2.load(std::sync::atomic::Ordering::Relaxed) { break; }
+                                        match client_reader.read(&mut buf) {
+                                            Ok(0) => break,
+                                            Ok(n) => { if chan_writer.write_all(&buf[..n]).is_err() { break; } }
+                                            Err(_) => break,
+                                        }
+                                    }
+                                });
+
+                                let mut fbuf = [0u8; 8192];
+                                loop {
+                                    if flag.load(std::sync::atomic::Ordering::Relaxed) { break; }
+                                    match chan_reader.read(&mut fbuf) {
+                                        Ok(0) => break,
+                                        Ok(n) => { if client_writer.write_all(&fbuf[..n]).is_err() { break; } }
+                                        Err(_) => break,
+                                    }
+                                }
+                                let _ = t1.join();
+                            }
+                            Err(_) => {
+                                let reply = [0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0];
+                                let _ = client.write_all(&reply);
+                            }
+                        }
+                    });
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(100));
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    Ok(SshTunnel {
+        stop_flag,
+        local_port,
+        remote_host: "dynamic".to_string(),
+        remote_port: 0,
+        tunnel_type: "dynamic".to_string(),
+    })
 }
 
 pub fn spawn_read_thread(

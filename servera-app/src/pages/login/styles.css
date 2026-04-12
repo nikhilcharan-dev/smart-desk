@@ -15,7 +15,7 @@
    ========================= */
 .login-header {
   text-align: center;
-  max-width: 520px;
+  max-width: 560px;
 }
 
 .login-title {
@@ -43,93 +43,173 @@
    ========================= */
 .login-card {
   width: 100%;
-  max-width: 520px;
-  min-height: 300px;
-  padding: 32px 28px;
+  max-width: 620px;
+  min-height: 280px;
+  max-height: 72vh;
+  padding: 0;
   background: linear-gradient(180deg,
       rgba(255, 255, 255, 0.035),
-      rgba(255, 255, 255, 0.015));
+      rgba(255, 255, 255, 0.012));
   border-radius: var(--radius);
   border: 1px solid var(--border);
   backdrop-filter: blur(6px);
   display: flex;
   flex-direction: column;
-  justify-content: flex-start;
+  overflow: hidden;
 }
 
 /* =========================
-   INPUT GROUP
+   TABS
    ========================= */
-.login-fields {
+.tabs-header {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  padding: 0 4px;
+}
+
+.tab-btn {
+  flex: 1;
+  background: transparent;
+  border: none;
+  padding: 14px 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-weight: 500;
+  font-size: 13px;
+  transition: all 0.2s;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+}
+
+.tab-btn.active {
+  color: var(--accent-primary);
+  border-bottom-color: var(--accent-primary);
+}
+
+.tab-btn:hover {
+  color: var(--text-main);
+}
+
+/* =========================
+   FORM STRUCTURE
+   ========================= */
+.conn-form {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  margin-top: 20px;
+  padding: 4px 28px 28px;
+  overflow-y: auto;
+  flex: 1;
 }
 
-.login-row {
+.conn-form::-webkit-scrollbar {
+  width: 4px;
+}
+
+.conn-form::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.conn-form::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+
+/* ── Form Sections ── */
+.form-section {
+  padding: 16px 0 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.form-section:last-of-type {
+  border-bottom: none;
+}
+
+.form-section-title {
   display: flex;
-  gap: 12px;
   align-items: center;
+  gap: 7px;
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.32);
+  margin-bottom: 12px;
+}
+
+/* ── Labeled Fields ── */
+.labeled-field {
+  margin-bottom: 10px;
+}
+
+.labeled-field-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.45);
+  margin-bottom: 5px;
+  margin-left: 2px;
+}
+
+/* ── Grid Layouts ── */
+.form-grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 100px;
+  gap: 10px;
 }
 
 /* =========================
-   STANDARD INPUTS
+   INPUTS
    ========================= */
-.login-card input {
-  padding: 11px 14px;
+.login-card input,
+.conn-form input {
+  padding: 10px 13px;
   background: var(--bg-elevated);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 9px;
   color: var(--text-main);
-  font-size: 14px;
+  font-size: 13px;
   width: 100%;
   box-sizing: border-box;
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 
-.login-card input::placeholder {
-  color: var(--text-muted);
+.login-card input::placeholder,
+.conn-form input::placeholder {
+  color: rgba(255, 255, 255, 0.22);
 }
 
-.login-card input:focus {
+.login-card input:focus,
+.conn-form input:focus {
   outline: none;
   border-color: var(--accent-primary);
-  box-shadow: 0 0 0 1px rgba(79, 124, 255, 0.3);
+  box-shadow: 0 0 0 1px rgba(79, 124, 255, 0.25);
 }
 
-/* Port field — narrow fixed width */
 .port-field {
-  width: 60px;
-}
-
-.proxy-jump-container {
-  margin-top: 12px;
-  padding-top: 12px;
-  border-top: 1px solid rgba(255, 255, 255, 0.05);
-}
-
-.field-label {
-  display: block;
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: rgba(255, 255, 255, 0.4);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  margin-bottom: 6px;
-  margin-left: 4px;
+  text-align: center;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  letter-spacing: 0.04em;
 }
 
 /* =========================
-   AUTH MODE TOGGLE
+   AUTH TOGGLE
    ========================= */
 .auth-toggle {
   display: flex;
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: 10px;
-  padding: 4px;
-  gap: 4px;
+  padding: 3px;
+  gap: 3px;
+  margin-bottom: 10px;
 }
 
 .auth-mode-btn {
@@ -137,12 +217,13 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 8px 12px;
+  gap: 6px;
+  padding: 8px 10px;
   background: transparent;
   border: none;
   border-radius: 7px;
   color: var(--text-muted);
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 500;
   cursor: pointer;
   transition: background 0.15s, color 0.15s;
@@ -155,6 +236,31 @@
 .auth-mode-btn.active {
   background: rgba(79, 124, 255, 0.14);
   color: var(--accent-primary);
+}
+
+/* ── Agent Info Box ── */
+.agent-info {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px;
+  background: rgba(79, 124, 255, 0.04);
+  border: 1px solid rgba(79, 124, 255, 0.15);
+  border-radius: 10px;
+  color: var(--accent-primary);
+}
+
+.agent-info-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-main);
+  margin-bottom: 2px;
+}
+
+.agent-info-desc {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  line-height: 1.5;
 }
 
 /* =========================
@@ -170,7 +276,7 @@
   border-radius: 10px;
   cursor: pointer;
   transition: border-color 0.15s, background 0.15s;
-  min-height: 56px;
+  min-height: 54px;
 }
 
 .key-card:hover {
@@ -180,7 +286,7 @@
 
 .key-card.has-key {
   border-style: solid;
-  border-color: rgba(79, 124, 255, 0.35);
+  border-color: rgba(79, 124, 255, 0.3);
   cursor: default;
   background: rgba(79, 124, 255, 0.04);
 }
@@ -277,37 +383,82 @@
 }
 
 /* =========================
+   COLOR PICKER
+   ========================= */
+.color-picker-row {
+  display: flex;
+  gap: 6px;
+  padding: 4px 0 8px;
+}
+
+.color-dot {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  background: var(--dot-color);
+  cursor: pointer;
+  transition: transform 0.15s, border-color 0.15s, box-shadow 0.15s;
+}
+
+.color-dot:hover {
+  transform: scale(1.15);
+}
+
+.color-dot.active {
+  border-color: var(--dot-color);
+  box-shadow: 0 0 0 2px var(--bg-main), 0 0 0 4px var(--dot-color);
+  transform: scale(1.1);
+}
+
+/* =========================
    ERROR TEXT
    ========================= */
 .error-text {
-  margin-top: 4px;
+  margin-top: 8px;
+  padding: 8px 12px;
   font-size: 12px;
   color: var(--accent-danger);
+  background: rgba(239, 68, 68, 0.06);
+  border: 1px solid rgba(239, 68, 68, 0.15);
+  border-radius: 8px;
 }
 
 /* =========================
    BUTTONS
    ========================= */
+.form-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 16px;
+  padding-top: 8px;
+}
+
 .primary-btn {
-  margin-top: 28px;
-  padding: 11px;
-  width: 100%;
-  background: var(--bg-elevated);
-  color: var(--text-main);
-  border: 1px solid var(--border);
+  flex: 1;
+  padding: 11px 16px;
+  background: linear-gradient(135deg, rgba(79, 124, 255, 0.15), rgba(79, 124, 255, 0.08));
+  color: var(--accent-primary);
+  border: 1px solid rgba(79, 124, 255, 0.25);
   border-radius: 10px;
-  font-weight: 500;
+  font-weight: 600;
+  font-size: 13px;
   cursor: pointer;
-  transition: background 0.15s ease, border-color 0.15s ease;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
 }
 
 .primary-btn:hover {
-  background: #20263a;
-  border-color: var(--accent-primary);
+  background: linear-gradient(135deg, rgba(79, 124, 255, 0.25), rgba(79, 124, 255, 0.12));
+  border-color: rgba(79, 124, 255, 0.45);
+  box-shadow: 0 0 16px rgba(79, 124, 255, 0.1);
 }
 
 .primary-btn:active {
-  background: #1a1f32;
+  transform: scale(0.98);
 }
 
 .primary-btn:disabled {
@@ -323,6 +474,7 @@
   border: 1px solid var(--border);
   border-radius: 10px;
   font-weight: 500;
+  font-size: 13px;
   cursor: pointer;
   transition: color 0.15s, border-color 0.15s;
   white-space: nowrap;
@@ -333,71 +485,97 @@
   border-color: var(--text-muted);
 }
 
-/* =========================
-   RESPONSIVE
-   ========================= */
-@media (max-width: 600px) {
-  .login-title {
-    font-size: 2.4rem;
-  }
-
-  .login-card {
-    padding: 24px;
-    min-height: 320px;
-  }
-
-  .ip-segment {
-    width: 30px;
-    font-size: 13px;
-  }
-}
-
-/* =========================
-   TABS
-   ========================= */
-.tabs-header {
+.import-btn {
+  padding: 11px 16px;
   display: flex;
-  margin-bottom: 24px;
-  border-bottom: 1px solid var(--border);
-}
-
-.tab-btn {
-  flex: 1;
-  background: transparent;
-  border: none;
-  padding: 12px;
-  color: var(--text-muted);
+  align-items: center;
+  gap: 7px;
+  background: rgba(56, 139, 253, 0.06);
+  border: 1px solid rgba(56, 139, 253, 0.18);
+  color: #58a6ff;
+  border-radius: 10px;
   cursor: pointer;
+  font-size: 13px;
   font-weight: 500;
   transition: all 0.2s;
-  border-bottom: 2px solid transparent;
-  margin-bottom: -1px;
+  white-space: nowrap;
 }
 
-.tab-btn.active {
-  color: var(--accent-primary);
-  border-bottom-color: var(--accent-primary);
-}
-
-.tab-btn:hover {
-  color: var(--text-main);
+.import-btn:hover {
+  background: rgba(56, 139, 253, 0.12);
+  border-color: rgba(56, 139, 253, 0.35);
 }
 
 /* =========================
-   PROFILES LIST
+   PROFILES VIEW
    ========================= */
 .profiles-view {
   display: flex;
   flex-direction: column;
+  padding: 0 24px 20px;
+  flex: 1;
+  overflow: hidden;
+  min-height: 0;
 }
 
+/* ── Toolbar ── */
+.profiles-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 0 10px;
+  flex-shrink: 0;
+}
+
+.profiles-count {
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.3);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.view-toggle {
+  display: flex;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 2px;
+  gap: 2px;
+}
+
+.view-toggle-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 24px;
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.view-toggle-btn:hover {
+  color: var(--text-main);
+}
+
+.view-toggle-btn.active {
+  background: rgba(79, 124, 255, 0.14);
+  color: var(--accent-primary);
+}
+
+/* ── Shared List/Grid Container ── */
 .profiles-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  max-height: 280px;
+  gap: 5px;
+  flex: 1;
   overflow-y: auto;
   padding-right: 2px;
+  min-height: 0;
 }
 
 .profiles-list::-webkit-scrollbar {
@@ -413,21 +591,39 @@
   border-radius: 4px;
 }
 
+/* Grid mode override */
+.profiles-list.profiles-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(165px, 1fr));
+  gap: 8px;
+}
+
+.profiles-footer {
+  display: flex;
+  gap: 10px;
+  margin-top: 12px;
+  flex-shrink: 0;
+}
+
+/* ═══════════════════════════════
+   LIST ITEM (compact row)
+   ═══════════════════════════════ */
 .profile-item {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 12px;
+  padding: 8px 12px;
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: 8px;
   cursor: pointer;
-  transition: border-color 0.15s, background 0.15s;
+  transition: border-color 0.2s, background 0.2s, box-shadow 0.2s;
 }
 
 .profile-item:hover {
-  border-color: var(--accent-primary);
-  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(79, 124, 255, 0.35);
+  background: rgba(79, 124, 255, 0.04);
+  box-shadow: 0 0 12px rgba(79, 124, 255, 0.05);
 }
 
 .profile-dot {
@@ -435,6 +631,7 @@
   height: 8px;
   border-radius: 50%;
   flex-shrink: 0;
+  box-shadow: 0 0 6px currentColor;
 }
 
 .profile-info {
@@ -447,63 +644,163 @@
 .profile-name {
   font-weight: 600;
   color: var(--text-main);
-  font-size: 13px;
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .profile-sub {
-  font-size: 11px;
+  font-size: 10.5px;
   color: var(--text-muted);
   margin-top: 1px;
+  font-family: 'JetBrains Mono', monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .profile-port {
-  opacity: 0.6;
+  opacity: 0.5;
 }
 
 .profile-actions {
   display: flex;
-  gap: 4px;
+  gap: 2px;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.profile-item:hover .profile-actions {
+  opacity: 1;
+}
+
+/* ═══════════════════════════════
+   GRID TILE (card)
+   ═══════════════════════════════ */
+.profile-tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  cursor: pointer;
+  overflow: hidden;
+  transition: border-color 0.2s, background 0.2s, box-shadow 0.2s, transform 0.15s;
+}
+
+.profile-tile:hover {
+  border-color: rgba(79, 124, 255, 0.35);
+  background: rgba(79, 124, 255, 0.03);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25), 0 0 12px rgba(79, 124, 255, 0.06);
+  transform: translateY(-1px);
+}
+
+.tile-accent {
+  height: 3px;
   flex-shrink: 0;
 }
 
+.tile-body {
+  padding: 12px 14px 10px;
+  flex: 1;
+  min-width: 0;
+}
+
+.tile-name {
+  font-weight: 700;
+  font-size: 12.5px;
+  color: var(--text-main);
+  margin-bottom: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tile-host {
+  font-size: 11px;
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tile-user {
+  font-size: 10.5px;
+  color: rgba(255, 255, 255, 0.28);
+  margin-top: 2px;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.tile-port {
+  opacity: 0.6;
+}
+
+.tile-actions {
+  display: flex;
+  gap: 2px;
+  position: absolute;
+  top: 7px;
+  right: 6px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.profile-tile:hover .tile-actions {
+  opacity: 1;
+}
+
+/* ── Shared Buttons ── */
 .icon-btn {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
-  background: transparent;
+  width: 24px;
+  height: 24px;
+  background: rgba(0, 0, 0, 0.3);
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: 5px;
   color: var(--text-muted);
   cursor: pointer;
   transition: color 0.15s, border-color 0.15s, background 0.15s;
+  backdrop-filter: blur(4px);
 }
 
 .icon-btn:hover {
   color: var(--text-main);
   border-color: var(--border);
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .icon-btn.danger:hover {
   color: var(--accent-danger);
   border-color: rgba(239, 68, 68, 0.3);
-  background: rgba(239, 68, 68, 0.07);
+  background: rgba(239, 68, 68, 0.12);
 }
 
 .empty-state {
-  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   color: var(--text-muted);
   font-size: 13px;
-  margin: 28px 0;
+  padding: 28px 0;
   line-height: 1.6;
+  grid-column: 1 / -1;
+}
+
+.empty-hint {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.25);
 }
 
 /* ==============================================
-   ENTERING ANIMATIONS — triggered after startup
-   .login-entering is added by App.jsx once the
-   StartupAnimation begins its fade-out.
+   ENTERING ANIMATIONS
    ============================================== */
 
 @keyframes loginBloomIn {
@@ -546,28 +843,50 @@
   }
 }
 
-/* Header: logo + title bloom in */
 .login-entering .login-header {
   animation: loginBloomIn 0.75s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
-/* Card reveals slightly after header */
 .login-entering .login-card {
   animation: loginBloomIn 0.8s 0.18s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
-/* Tabs strip inside card */
 .login-entering .tabs-header {
   animation: loginBloomIn 0.55s 0.22s ease both;
 }
 
-/* Profile items — each one decrypts with a stagger driven by --item-idx */
-.login-entering .profile-item {
+.login-entering .profile-item,
+.login-entering .profile-tile {
   animation: profileDecryptIn 0.52s ease both;
-  animation-delay: calc(0.32s + var(--item-idx, 0) * 0.13s);
+  animation-delay: calc(0.32s + var(--item-idx, 0) * 0.09s);
 }
 
-/* New-profile button fades in last */
 .login-entering .primary-btn {
   animation: loginBloomIn 0.5s calc(0.32s + 4 * 0.13s) ease both;
+}
+
+/* =========================
+   RESPONSIVE
+   ========================= */
+@media (max-width: 600px) {
+  .login-title {
+    font-size: 2.4rem;
+  }
+
+  .login-card {
+    min-height: 320px;
+    border-radius: 12px;
+  }
+
+  .conn-form {
+    padding: 4px 20px 20px;
+  }
+
+  .profiles-view {
+    padding: 12px 20px 20px;
+  }
+
+  .form-grid-2 {
+    grid-template-columns: 1fr 80px;
+  }
 }

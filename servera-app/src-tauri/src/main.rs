@@ -10,7 +10,7 @@ mod os_support;
 
 use ai_config::{AiConfig, AiConfigManager};
 use profile_manager::{Profile, ProfileManager};
-use ssh_client::{spawn_read_thread, SshConnection, SshExecConn};
+use ssh_client::{spawn_read_thread, spawn_log_reader, SshConnection, SshExecConn, SshTunnel};
 use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
 use tauri::{AppHandle, State, Manager};
@@ -23,12 +23,22 @@ use sysinfo::{System, Disks};
 
 type SharedSession = Arc<Mutex<Option<SshConnection>>>;
 type SharedExecConn = Arc<Mutex<Option<SshExecConn>>>;
+type SharedChannel = Arc<Mutex<Option<ssh2::Channel>>>;
 type MfaSender = tokio::sync::oneshot::Sender<Vec<String>>;
+
+struct LogStreamHandle {
+    #[allow(dead_code)]
+    session: ssh2::Session,
+    channel: SharedChannel,
+    stop_flag: Arc<std::sync::atomic::AtomicBool>,
+}
 
 struct AppState {
     sessions: Mutex<HashMap<String, SharedSession>>,
     exec_conns: Mutex<HashMap<String, SharedExecConn>>,
     mfa_channels: Mutex<HashMap<String, MfaSender>>,
+    log_streams: Mutex<HashMap<String, LogStreamHandle>>,
+    tunnels: Mutex<HashMap<String, SshTunnel>>,
     system: Mutex<System>,
 }
 
@@ -38,6 +48,8 @@ impl AppState {
             sessions: Mutex::new(HashMap::new()),
             exec_conns: Mutex::new(HashMap::new()),
             mfa_channels: Mutex::new(HashMap::new()),
+            log_streams: Mutex::new(HashMap::new()),
+            tunnels: Mutex::new(HashMap::new()),
             system: Mutex::new(System::new_all()),
         }
     }
@@ -849,6 +861,252 @@ async fn get_standard_metrics(state: State<'_, AppState>, session_id: String) ->
 }
 
 /* =========================
+   LOG STREAMING COMMANDS
+   ========================= */
+
+#[tauri::command]
+async fn start_log_stream(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    session_id: String,
+    stream_id: String,
+    log_path: String,
+    ip: String,
+    user: String,
+    port: u16,
+    password: Option<String>,
+    private_key: Option<String>,
+    proxy_jump: Option<String>,
+) -> Result<(), String> {
+    tokio::task::block_in_place(|| {
+        let command = if log_path == "__journalctl__" {
+            "journalctl -f --no-pager 2>/dev/null || echo 'journalctl not available'".to_string()
+        } else {
+            format!("tail -f {} 2>/dev/null || echo 'Cannot stream'", log_path)
+        };
+
+        let (session, channel) = ssh_client::open_stream_channel(
+            &ip, &user, port,
+            password.as_deref(),
+            private_key.as_deref(),
+            proxy_jump.as_deref(),
+            &command,
+            &app,
+            &session_id,
+        )?;
+
+        let stop_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let shared_channel: SharedChannel = Arc::new(Mutex::new(Some(channel)));
+
+        spawn_log_reader(stream_id.clone(), shared_channel.clone(), stop_flag.clone(), app);
+
+        let handle = LogStreamHandle {
+            session,
+            channel: shared_channel,
+            stop_flag,
+        };
+
+        let mut streams = state.log_streams.lock().unwrap_or_else(|p| p.into_inner());
+        streams.insert(stream_id, handle);
+        Ok(())
+    })
+}
+
+#[tauri::command]
+fn stop_log_stream(state: State<'_, AppState>, stream_id: String) {
+    let mut streams = state.log_streams.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(handle) = streams.remove(&stream_id) {
+        handle.stop_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+        let mut ch = handle.channel.lock().unwrap_or_else(|p| p.into_inner());
+        *ch = None;
+    }
+}
+
+/* =========================
+   TUNNEL COMMANDS
+   ========================= */
+
+#[derive(Serialize, Clone)]
+struct TunnelInfo {
+    id: String,
+    tunnel_type: String,
+    local_port: u16,
+    remote_host: String,
+    remote_port: u16,
+}
+
+#[tauri::command]
+async fn create_tunnel(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    session_id: String,
+    tunnel_id: String,
+    tunnel_type: String,
+    local_port: u16,
+    remote_host: Option<String>,
+    remote_port: Option<u16>,
+    ip: String,
+    user: String,
+    port: u16,
+    password: Option<String>,
+    private_key: Option<String>,
+    proxy_jump: Option<String>,
+) -> Result<TunnelInfo, String> {
+    tokio::task::block_in_place(|| {
+        let tunnel = match tunnel_type.as_str() {
+            "local" => {
+                let rh = remote_host.as_deref().unwrap_or("127.0.0.1");
+                let rp = remote_port.unwrap_or(80);
+                ssh_client::start_local_forward(
+                    &ip, &user, port,
+                    password.as_deref(), private_key.as_deref(), proxy_jump.as_deref(),
+                    local_port, rh, rp, &app, &session_id,
+                )?
+            }
+            "dynamic" => {
+                ssh_client::start_dynamic_forward(
+                    &ip, &user, port,
+                    password.as_deref(), private_key.as_deref(), proxy_jump.as_deref(),
+                    local_port, &app, &session_id,
+                )?
+            }
+            _ => return Err(format!("Unknown tunnel type: {}", tunnel_type)),
+        };
+
+        let info = TunnelInfo {
+            id: tunnel_id.clone(),
+            tunnel_type: tunnel.tunnel_type.clone(),
+            local_port: tunnel.local_port,
+            remote_host: tunnel.remote_host.clone(),
+            remote_port: tunnel.remote_port,
+        };
+
+        let mut tunnels = state.tunnels.lock().unwrap_or_else(|p| p.into_inner());
+        tunnels.insert(tunnel_id, tunnel);
+        Ok(info)
+    })
+}
+
+#[tauri::command]
+fn close_tunnel(state: State<'_, AppState>, tunnel_id: String) -> Result<(), String> {
+    let mut tunnels = state.tunnels.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(tunnel) = tunnels.remove(&tunnel_id) {
+        tunnel.stop_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    } else {
+        Err("Tunnel not found".into())
+    }
+}
+
+#[tauri::command]
+fn list_tunnels(state: State<'_, AppState>) -> Vec<TunnelInfo> {
+    let tunnels = state.tunnels.lock().unwrap_or_else(|p| p.into_inner());
+    tunnels.iter().map(|(id, t)| TunnelInfo {
+        id: id.clone(),
+        tunnel_type: t.tunnel_type.clone(),
+        local_port: t.local_port,
+        remote_host: t.remote_host.clone(),
+        remote_port: t.remote_port,
+    }).collect()
+}
+
+/* =========================
+   FLEET ORCHESTRATION COMMANDS
+   ========================= */
+
+#[derive(Serialize, Clone)]
+struct FleetResult {
+    profile_id: String,
+    profile_name: String,
+    host: String,
+    output: String,
+    success: bool,
+    duration_ms: u64,
+}
+
+#[tauri::command]
+async fn fleet_run_command(
+    app: AppHandle,
+    profile_ids: Vec<String>,
+    command: String,
+) -> Result<Vec<FleetResult>, String> {
+    let mgr = ProfileManager::new(&app);
+    let profiles = mgr.load()?;
+
+    let mut handles = Vec::new();
+
+    for pid in profile_ids {
+        let profile = profiles.iter().find(|p| p.id == pid).cloned();
+        let cmd = command.clone();
+        let app_clone = app.clone();
+
+        handles.push(tokio::task::spawn_blocking(move || {
+            let profile = match profile {
+                Some(p) => p,
+                None => return FleetResult {
+                    profile_id: pid,
+                    profile_name: "Unknown".into(),
+                    host: "".into(),
+                    output: "Profile not found".into(),
+                    success: false,
+                    duration_ms: 0,
+                },
+            };
+
+            let key_user = format!("profile:{}", profile.id);
+            let password = profile_manager::get_password("servera", &key_user).ok();
+            let start = std::time::Instant::now();
+
+            let session_id = format!("fleet-{}", uuid::Uuid::new_v4());
+            match SshExecConn::connect(
+                &profile.ip, &profile.user, profile.port,
+                password.as_deref(),
+                profile.private_key_path.as_deref(),
+                profile.proxy_jump.as_deref(),
+                &app_clone,
+                &session_id,
+            ) {
+                Ok(conn) => {
+                    let output = conn.exec_command(&cmd).unwrap_or_else(|e| e);
+                    FleetResult {
+                        profile_id: profile.id.clone(),
+                        profile_name: if profile.name.is_empty() { format!("{}@{}", profile.user, profile.ip) } else { profile.name.clone() },
+                        host: format!("{}@{}:{}", profile.user, profile.ip, profile.port),
+                        output,
+                        success: true,
+                        duration_ms: start.elapsed().as_millis() as u64,
+                    }
+                }
+                Err(e) => FleetResult {
+                    profile_id: profile.id.clone(),
+                    profile_name: if profile.name.is_empty() { format!("{}@{}", profile.user, profile.ip) } else { profile.name.clone() },
+                    host: format!("{}@{}:{}", profile.user, profile.ip, profile.port),
+                    output: format!("Connection failed: {}", e),
+                    success: false,
+                    duration_ms: start.elapsed().as_millis() as u64,
+                },
+            }
+        }));
+    }
+
+    let mut results = Vec::new();
+    for handle in handles {
+        match handle.await {
+            Ok(r) => results.push(r),
+            Err(e) => results.push(FleetResult {
+                profile_id: "".into(),
+                profile_name: "".into(),
+                host: "".into(),
+                output: format!("Task error: {}", e),
+                success: false,
+                duration_ms: 0,
+            }),
+        }
+    }
+    Ok(results)
+}
+
+/* =========================
    MAIN
    ========================= */
 
@@ -918,6 +1176,15 @@ fn main() {
             get_package_updates,
             perform_package_upgrade,
             get_standard_metrics,
+            // Log Streaming
+            start_log_stream,
+            stop_log_stream,
+            // Tunnels
+            create_tunnel,
+            close_tunnel,
+            list_tunnels,
+            // Fleet Orchestration
+            fleet_run_command,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -4,23 +4,28 @@ pub struct LinuxMonitor;
 
 impl SystemMonitor for LinuxMonitor {
     fn gather_stats_cmd(&self) -> String {
-        // We use a combined script to minimize SSH overhead, similar to the original dashboard
         r#"
-            uptime -p; 
-            echo "---"; 
-            free -m; 
-            echo "---"; 
-            df -h / | tail -1; 
-            echo "---"; 
-            grep PRETTY_NAME /etc/os-release; 
-            echo "---"; 
-            cat /proc/stat | grep '^cpu '; 
-            echo "---"; 
-            cat /proc/net/dev | grep -E 'eth|en|wl|veth' | sort -k2 -nr | head -n 1; 
-            echo "---"; 
+            uptime -p;
+            echo "---";
+            free -m;
+            echo "---";
+            df -h / | tail -1;
+            echo "---";
+            grep PRETTY_NAME /etc/os-release;
+            echo "---";
+            cat /proc/stat | grep '^cpu ';
+            echo "---";
+            cat /proc/net/dev | grep -E 'eth|en|wl|veth' | sort -k2 -nr | head -n 1;
+            echo "---";
             ps -e -o pid,pcpu,pmem,comm --sort=-pcpu | head -n 10;
-            echo "---"; 
-            cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null || echo 'N/A'
+            echo "---";
+            __t=""; for __f in /sys/class/thermal/thermal_zone*/temp /sys/class/hwmon/hwmon*/temp1_input /sys/devices/platform/coretemp.*/hwmon/hwmon*/temp1_input; do if [ -r "$__f" ] 2>/dev/null; then __t=$(cat "$__f" 2>/dev/null); [ -n "$__t" ] && break; fi; done; if [ -z "$__t" ]; then __t=$(sensors 2>/dev/null | grep -m1 -oE '[+-]?[0-9]+\.[0-9]+' | head -1); [ -n "$__t" ] && __t="${__t}C"; fi; if [ -z "$__t" ]; then __t=$(vcgencmd measure_temp 2>/dev/null | grep -oE '[0-9]+\.[0-9]+'); [ -n "$__t" ] && __t="${__t}C"; fi; echo "${__t:-N/A}";
+            echo "---";
+            uname -r;
+            echo "---";
+            uname -m;
+            echo "---";
+            nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo
         "#.to_string()
     }
 
@@ -38,6 +43,9 @@ impl SystemMonitor for LinuxMonitor {
         let net_raw = blocks[5];
         let ps_raw = blocks[6];
         let temp_raw = blocks[7];
+        let kernel = blocks.get(8).unwrap_or(&"").trim().to_string();
+        let arch = blocks.get(9).unwrap_or(&"").trim().to_string();
+        let cpu_cores: u32 = blocks.get(10).unwrap_or(&"0").trim().parse().unwrap_or(0);
 
         // OS Name
         let os_name = os_raw.split('=')
@@ -95,12 +103,29 @@ impl SystemMonitor for LinuxMonitor {
             });
         }
 
-        // Temp
-        let temp = if temp_raw != "N/A" {
-            let t: f32 = temp_raw.parse().unwrap_or(0.0);
-            if t > 0.0 { format!("{:.1}°C", t / 1000.0) } else { "N/A".to_string() }
-        } else {
+        // Temp — handles multiple formats:
+        //   sysfs millidegrees: "42000"  → 42.0°C
+        //   sensors output:    "+42.0°C" → 42.0°C
+        let temp = if temp_raw.is_empty() || temp_raw == "N/A" {
             "N/A".to_string()
+        } else {
+            // Strip +/- prefix and °C suffix for sensors output
+            let cleaned = temp_raw.trim_start_matches('+').trim_start_matches('-')
+                .replace("°C", "").replace("'C", "");
+            let cleaned = cleaned.trim();
+            if let Ok(t) = cleaned.parse::<f32>() {
+                if t > 1000.0 {
+                    // sysfs millidegree format
+                    format!("{:.1}°C", t / 1000.0)
+                } else if t > 0.0 {
+                    // already in Celsius (sensors / hwmon already converted)
+                    format!("{:.1}°C", t)
+                } else {
+                    "N/A".to_string()
+                }
+            } else {
+                "N/A".to_string()
+            }
         };
 
         // Processes
@@ -120,6 +145,9 @@ impl SystemMonitor for LinuxMonitor {
         Ok(SystemMetrics {
             os_name,
             uptime,
+            kernel,
+            arch,
+            cpu_cores,
             cpu_usage,
             mem_total_mb,
             mem_used_mb,

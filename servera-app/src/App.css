@@ -22,42 +22,47 @@ body.dnd-active .drag-underlay {
 }
 
 .app-sidebar {
-  width: 68px;
+  width: 56px;
   background: #080a0f;
   border-right: 1px solid #1f2532;
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 16px 0;
+  padding: 10px 0;
   z-index: 10;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.app-sidebar::-webkit-scrollbar {
+  width: 0;
 }
 
 .sidebar-icon,
 .sidebar-spacer,
 .sidebar-icon.danger {
   pointer-events: auto;
-  /* Keep UI interactive */
 }
 
 .sidebar-icon {
-  width: 44px;
-  height: 44px;
+  width: 38px;
+  height: 38px;
   display: flex;
   align-items: center;
   justify-content: center;
-  margin-bottom: 16px;
-  border-radius: 12px;
+  margin-bottom: 4px;
+  border-radius: 10px;
   cursor: pointer;
   font-size: 20px;
   color: #6b7280;
   transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   position: relative;
+  flex-shrink: 0;
 }
 
 .sidebar-icon:hover {
   background: #1c2230;
   color: #e5e7eb;
-  transform: translateY(-1px);
 }
 
 .sidebar-icon[data-active="true"] {
@@ -68,11 +73,42 @@ body.dnd-active .drag-underlay {
 .sidebar-icon[data-active="true"]::before {
   content: '';
   position: absolute;
-  left: -16px;
-  height: 24px;
-  width: 4px;
+  left: -12px;
+  height: 20px;
+  width: 3px;
   background: #4f9cff;
-  border-radius: 0 4px 4px 0;
+  border-radius: 0 3px 3px 0;
+}
+
+/* ── Sidebar Tooltip (fixed-position, immune to overflow clip) ── */
+.sidebar-tip {
+  position: fixed;
+  transform: translateY(-50%);
+  background: #1a1f2e;
+  color: #e5e7eb;
+  font-size: 11.5px;
+  font-weight: 600;
+  font-family: var(--font-ui);
+  padding: 6px 12px;
+  border-radius: 8px;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 9999;
+  border: 1px solid #262b3d;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+  letter-spacing: 0.01em;
+  animation: tipSlideIn 0.12s ease-out;
+}
+
+@keyframes tipSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-50%) translateX(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(-50%) translateX(0);
+  }
 }
 
 .sidebar-spacer {
@@ -351,18 +387,23 @@ body.dnd-active .drag-underlay {
 
   .sidebar-icon {
     margin-bottom: 0;
-    width: 40px;
-    height: 40px;
+    width: 36px;
+    height: 36px;
   }
 
   .sidebar-icon[data-active="true"]::before {
     left: 50%;
     bottom: -8px;
     top: auto;
-    width: 24px;
-    height: 4px;
+    width: 20px;
+    height: 3px;
     transform: translateX(-50%);
-    border-radius: 4px 4px 0 0;
+    border-radius: 3px 3px 0 0;
+  }
+
+  /* Hide tooltips on mobile */
+  .sidebar-tip {
+    display: none;
   }
 
   .sidebar-spacer {

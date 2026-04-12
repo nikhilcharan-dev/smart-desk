@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import {
     LayoutDashboard, FolderOpen, Terminal, Monitor,
-    Settings, LogOut, Cpu, Network, ScrollText, Code2, Command
+    Settings, LogOut, Cpu, Network, ScrollText, Code2, Command,
+    Box, Shield, PackageOpen, ShieldCheck, ArrowRightLeft, Zap, BookOpen
 } from 'lucide-react';
 import './CommandPalette.css';
 
@@ -13,8 +14,15 @@ const ACTIONS = [
     { id: 'nav-termhub', name: 'TermHub', desc: 'Multi-server terminals', icon: Monitor, group: 'Navigate', action: 'setView', value: 'termhub' },
     { id: 'nav-processes', name: 'Process Manager', desc: 'View & kill remote processes', icon: Cpu, group: 'Navigate', action: 'setView', value: 'processes' },
     { id: 'nav-ports', name: 'Port Scanner', desc: 'Discover open ports', icon: Network, group: 'Navigate', action: 'setView', value: 'ports' },
-    { id: 'nav-logs', name: 'Log Viewer', desc: 'Tail remote log files', icon: ScrollText, group: 'Navigate', action: 'setView', value: 'logs' },
+    { id: 'nav-logs', name: 'Log Viewer', desc: 'Stream logs with tail -f', icon: ScrollText, group: 'Navigate', action: 'setView', value: 'logs' },
     { id: 'nav-snippets', name: 'Snippets', desc: 'Saved command snippets', icon: Code2, group: 'Navigate', action: 'setView', value: 'snippets' },
+    { id: 'nav-docker', name: 'Docker Manager', desc: 'Containers, compose stacks & logs', icon: Box, group: 'Navigate', action: 'setView', value: 'docker' },
+    { id: 'nav-tunnels', name: 'SSH Tunnels', desc: 'Port forwards (-L) & SOCKS proxy (-D)', icon: ArrowRightLeft, group: 'Navigate', action: 'setView', value: 'tunnels' },
+    { id: 'nav-fleet', name: 'Fleet Runner', desc: 'Run commands across multiple servers', icon: Zap, group: 'Navigate', action: 'setView', value: 'fleet', keywords: 'cluster ssh parallel orchestration multi' },
+    { id: 'nav-playbooks', name: 'Playbook Runner', desc: 'Ansible playbooks & Terraform plans', icon: BookOpen, group: 'Navigate', action: 'setView', value: 'playbooks', keywords: 'iac infrastructure ansible terraform' },
+    { id: 'nav-ufw', name: 'Firewall (UFW)', desc: 'Manage firewall rules', icon: Shield, group: 'Navigate', action: 'setView', value: 'ufw' },
+    { id: 'nav-apt', name: 'System Updates', desc: 'Package upgrades (apt/yum/pacman)', icon: PackageOpen, group: 'Navigate', action: 'setView', value: 'apt' },
+    { id: 'nav-permissions', name: 'Access Control', desc: 'File permissions & user access', icon: ShieldCheck, group: 'Navigate', action: 'setView', value: 'permissions' },
     { id: 'nav-settings', name: 'Settings', desc: 'Configure app, AI & sidebar', icon: Settings, group: 'Navigate', action: 'setView', value: 'settings' },
     // Actions
     { id: 'act-disconnect', name: 'Disconnect', desc: 'Close SSH session', icon: LogOut, group: 'Actions', action: 'disconnect' },
@@ -40,7 +48,8 @@ export default function CommandPalette({ isOpen, onClose, onAction }) {
         return ACTIONS.filter(a =>
             a.name.toLowerCase().includes(q) ||
             a.desc.toLowerCase().includes(q) ||
-            a.group.toLowerCase().includes(q)
+            a.group.toLowerCase().includes(q) ||
+            (a.keywords && a.keywords.toLowerCase().includes(q))
         );
     }, [query]);
 

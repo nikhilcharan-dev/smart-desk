@@ -27,6 +27,9 @@ import UFWManager from "./components/UFWManager/UFWManager";
 import PackageManager from "./components/PackageManager/PackageManager";
 import PermissionModal from "./components/FileExplorer/PermissionModal";
 import MfaModal from "./components/Common/MfaModal";
+import TunnelManager from "./components/TunnelManager/TunnelManager";
+import FleetRunner from "./components/FleetRunner/FleetRunner";
+import PlaybookRunner from "./components/PlaybookRunner/PlaybookRunner";
 import { DEFAULT_SIDEBAR_ITEMS } from "./constants";
 import StartupAnimation from "./components/StartupAnimation/StartupAnimation";
 
@@ -124,15 +127,26 @@ export default function App() {
     const [cmdOpen, setCmdOpen] = useState(false);
 
     // Sidebar customization — persisted to localStorage
+    // Merges any newly added DEFAULT_SIDEBAR_ITEMS so existing users see new features
     const [sidebarItems, setSidebarItemsRaw] = useState(() => {
+        const allIds = DEFAULT_SIDEBAR_ITEMS.map(i => i.id);
         try {
             const saved = localStorage.getItem('sidebarItems');
             if (saved) {
                 const parsed = JSON.parse(saved);
-                if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+                if (Array.isArray(parsed) && parsed.length > 0) {
+                    const savedSet = new Set(parsed);
+                    const missing = allIds.filter(id => !savedSet.has(id));
+                    if (missing.length > 0) {
+                        const merged = [...parsed, ...missing];
+                        localStorage.setItem('sidebarItems', JSON.stringify(merged));
+                        return merged;
+                    }
+                    return parsed;
+                }
             }
         } catch { /* ignore parse errors */ }
-        return DEFAULT_SIDEBAR_ITEMS.map(i => i.id);
+        return allIds;
     });
     const setSidebarItems = (items) => {
         setSidebarItemsRaw(items);
@@ -159,6 +173,15 @@ export default function App() {
     const [smartLayout] = useState("side-by-side");
     const [splitRatio, setSplitRatio] = useState(50); // terminal takes this % of space
     const [showOpsPilot, setShowOpsPilot] = useState(true); // whether OpsPilot panel is visible
+
+    // Sidebar tooltip (fixed-position, immune to overflow clipping)
+    const [sidebarTip, setSidebarTip] = useState(null); // { text, top, left }
+
+    const showTip = (e, text) => {
+        const rect = e.currentTarget.getBoundingClientRect();
+        setSidebarTip({ text, top: rect.top + rect.height / 2, left: rect.right + 12 });
+    };
+    const hideTip = () => setSidebarTip(null);
 
     // Terminal theme
     const [termThemeId, setTermThemeId] = useState(() => localStorage.getItem("term_theme") || "hacker");
@@ -375,7 +398,6 @@ export default function App() {
                         <div
                             key={item.id}
                             className="sidebar-icon"
-                            title={item.label}
                             onClick={() => {
                                 setActiveView(item.id);
                                 if (item.id === "terminal") {
@@ -383,27 +405,42 @@ export default function App() {
                                     if (!isTerminalOpen) setTerminalOpen(true);
                                 }
                             }}
+                            onMouseEnter={(e) => showTip(e, item.label)}
+                            onMouseLeave={hideTip}
                             data-active={activeView === item.id}
                         >
-                            <IconComp size={24} />
+                            <IconComp size={22} />
                         </div>
                     );
                 })}
 
                 <div className="sidebar-spacer"></div>
 
-                <div className="sidebar-icon" title="Command Palette (Ctrl+K)"
-                    onClick={() => setCmdOpen(true)}>
-                    <CommandIcon size={24} />
+                <div className="sidebar-icon"
+                    onClick={() => setCmdOpen(true)}
+                    onMouseEnter={(e) => showTip(e, "Command Palette (Ctrl+K)")}
+                    onMouseLeave={hideTip}>
+                    <CommandIcon size={22} />
                 </div>
-                <div className="sidebar-icon" title="Settings & Tools"
+                <div className="sidebar-icon"
                     onClick={() => setActiveView("settings")}
+                    onMouseEnter={(e) => showTip(e, "Settings & Tools")}
+                    onMouseLeave={hideTip}
                     data-active={activeView === "settings"}>
-                    <Settings size={24} />
+                    <Settings size={22} />
                 </div>
-                <div className="sidebar-icon danger" title="Disconnect" onClick={disconnect}>
-                    <LogOut size={24} />
+                <div className="sidebar-icon danger"
+                    onClick={disconnect}
+                    onMouseEnter={(e) => showTip(e, "Disconnect")}
+                    onMouseLeave={hideTip}>
+                    <LogOut size={22} />
                 </div>
+
+                {sidebarTip && (
+                    <div className="sidebar-tip" style={{ top: sidebarTip.top, left: sidebarTip.left }}>
+                        {sidebarTip.text}
+                    </div>
+                )}
             </div>
 
             {/* Main Content — all views stay mounted via display:none for state preservation */}
@@ -463,6 +500,21 @@ export default function App() {
                     <div style={{ display: activeView === "docker" ? "flex" : "none", flexDirection: "column", height: "100%", width: "100%" }}>
                         <ErrorBoundary>
                             <DockerManager />
+                        </ErrorBoundary>
+                    </div>
+                    <div style={{ display: activeView === "tunnels" ? "flex" : "none", flexDirection: "column", height: "100%", width: "100%" }}>
+                        <ErrorBoundary>
+                            <TunnelManager ip={ip} user={user} />
+                        </ErrorBoundary>
+                    </div>
+                    <div style={{ display: activeView === "fleet" ? "flex" : "none", flexDirection: "column", height: "100%", width: "100%" }}>
+                        <ErrorBoundary>
+                            <FleetRunner />
+                        </ErrorBoundary>
+                    </div>
+                    <div style={{ display: activeView === "playbooks" ? "flex" : "none", flexDirection: "column", height: "100%", width: "100%" }}>
+                        <ErrorBoundary>
+                            <PlaybookRunner />
                         </ErrorBoundary>
                     </div>
                     <div style={{ display: activeView === "ufw" ? "flex" : "none", flexDirection: "column", height: "100%", width: "100%" }}>

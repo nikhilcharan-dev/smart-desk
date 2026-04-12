@@ -1,6 +1,7 @@
 import {
     LayoutDashboard, FolderOpen, Terminal as TerminalIcon, Monitor,
-    Cpu, Network, ScrollText, Code2, Box, Shield, PackageOpen, ShieldCheck
+    Cpu, Network, ScrollText, Code2, Box, Shield, PackageOpen, ShieldCheck,
+    ArrowRightLeft, Zap, BookOpen
 } from "lucide-react";
 
 export const DEFAULT_SIDEBAR_ITEMS = [
@@ -13,6 +14,9 @@ export const DEFAULT_SIDEBAR_ITEMS = [
     { id: 'logs', label: 'Log Viewer', icon: ScrollText },
     { id: 'snippets', label: 'Snippets', icon: Code2 },
     { id: 'docker', label: 'Docker Manager', icon: Box },
+    { id: 'tunnels', label: 'SSH Tunnels', icon: ArrowRightLeft },
+    { id: 'fleet', label: 'Fleet Runner', icon: Zap },
+    { id: 'playbooks', label: 'Playbook Runner', icon: BookOpen },
     { id: 'ufw', label: 'Firewall (UFW)', icon: Shield },
     { id: 'apt', label: 'System Updates', icon: PackageOpen },
     { id: 'permissions', label: 'Access Control', icon: ShieldCheck }

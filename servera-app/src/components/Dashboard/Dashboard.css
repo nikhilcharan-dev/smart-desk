@@ -1,269 +1,563 @@
-.analytics-container {
-    padding: 32px 40px;
-    height: 100%;
-    overflow-y: auto;
-    background: #0b0e14;
-    font-family: var(--font-ui);
-    color: #e5e7eb;
+/* ═══════════════════════════════════════
+   DASHBOARD CONTAINER
+   ═══════════════════════════════════════ */
+.db-container {
+  padding: 28px 36px 48px;
+  height: 100%;
+  overflow-y: auto;
+  background: #06080c;
+  font-family: var(--font-ui);
+  color: #f0f2f5;
 }
 
-.ah-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 32px;
+/* ═══════════════════════════════════════
+   ENTRY ANIMATIONS
+   ═══════════════════════════════════════ */
+.db-anim {
+  opacity: 0;
+  transform: translateY(16px);
+  transition: opacity 0.5s cubic-bezier(0.22, 1, 0.36, 1),
+              transform 0.5s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-.ah-title {
-    margin: 0;
-    font-size: 24px;
-    font-weight: 700;
-    color: #fff;
-    letter-spacing: -0.02em;
+.db-entered .db-anim {
+  opacity: 1;
+  transform: translateY(0);
 }
 
-.ah-subtitle {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    color: #9ca3af;
-    font-size: 13px;
-    margin-top: 4px;
+.db-entered .db-anim-1 { transition-delay: 0s; }
+.db-entered .db-anim-2 { transition-delay: 0.06s; }
+.db-entered .db-anim-3 { transition-delay: 0.12s; }
+.db-entered .db-anim-4 { transition-delay: 0.18s; }
+.db-entered .db-anim-5 { transition-delay: 0.24s; }
+.db-entered .db-anim-6 { transition-delay: 0.30s; }
+.db-entered .db-anim-7 { transition-delay: 0.38s; }
+.db-entered .db-anim-8 { transition-delay: 0.46s; }
+
+/* ═══════════════════════════════════════
+   HEADER
+   ═══════════════════════════════════════ */
+.db-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24px;
 }
 
-.ah-dot {
-    opacity: 0.5;
-    font-size: 10px;
+.db-header-left {
+  display: flex;
+  align-items: center;
+  gap: 14px;
 }
 
-.ah-refresh-btn {
-    background: #11141d;
-    border: 1px solid #1f2532;
-    color: #d1d5db;
-    padding: 10px;
-    border-radius: 8px;
-    cursor: pointer;
-    transition: all 0.2s;
+.db-server-avatar {
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #1a2744, #0f1a30);
+  border: 1px solid rgba(79, 143, 255, 0.2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #4f8fff;
+  flex-shrink: 0;
 }
 
-.ah-refresh-btn:hover:not(:disabled) {
-    background: #1f2532;
-    color: #fff;
+.db-title {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.db-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 3px;
+  font-size: 11.5px;
+  color: #8b92a8;
+}
+
+.db-dot { opacity: 0.3; }
+
+.db-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 2px 9px;
+  border-radius: 20px;
+  background: rgba(34, 197, 94, 0.1);
+  color: #22c55e;
+  border: 1px solid rgba(34, 197, 94, 0.15);
+}
+
+.db-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #22c55e;
+  animation: dbPulse 2s infinite;
+}
+
+@keyframes dbPulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.4); }
+  50% { opacity: 0.7; box-shadow: 0 0 0 4px rgba(34, 197, 94, 0); }
+}
+
+.db-header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.db-uptime-chip {
+  font-size: 11px;
+  font-family: 'JetBrains Mono', monospace;
+  color: #505872;
+  background: #0c0f16;
+  border: 1px solid #1a1f2e;
+  padding: 7px 13px;
+  border-radius: 10px;
+}
+
+.db-uptime-chip span { color: #8b92a8; font-weight: 600; }
+
+.db-refresh-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: #0c0f16;
+  border: 1px solid #1a1f2e;
+  color: #8b92a8;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+}
+
+.db-refresh-btn:hover:not(:disabled) {
+  background: #12151e;
+  color: #f0f2f5;
+  border-color: #252b3d;
 }
 
 .spinning {
-    animation: spin 1s linear infinite;
+  animation: spin 1s linear infinite;
 }
 
 @keyframes spin {
-    from {
-        transform: rotate(0deg);
-    }
-
-    to {
-        transform: rotate(360deg);
-    }
+  to { transform: rotate(360deg); }
 }
 
-/* Quick Metrics Row */
-.ah-quick-metrics {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-    gap: 20px;
-    margin-bottom: 24px;
+/* ═══════════════════════════════════════
+   GAUGE ROW
+   ═══════════════════════════════════════ */
+.db-gauge-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 14px;
+  margin-bottom: 20px;
 }
 
-.ah-metric-card {
-    background: #11141d;
-    border: 1px solid #1f2532;
-    border-radius: 12px;
-    padding: 20px;
-    display: flex;
-    align-items: center;
-    gap: 16px;
+.db-gauge-card {
+  background: #0c0f16;
+  border: 1px solid #1a1f2e;
+  border-radius: 14px;
+  padding: 22px 18px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  transition: border-color 0.2s, box-shadow 0.2s;
 }
 
-.ah-metric-icon {
-    width: 48px;
-    height: 48px;
-    border-radius: 12px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
+.db-gauge-card:hover {
+  border-color: #252b3d;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.3);
 }
 
-.ah-metric-info {
-    display: flex;
-    flex-direction: column;
+.db-gauge-ring {
+  position: relative;
+  width: 100px;
+  height: 100px;
+  margin-bottom: 12px;
 }
 
-.ah-metric-label {
-    font-size: 12px;
-    color: #9ca3af;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    font-weight: 600;
-    margin-bottom: 4px;
+.db-gauge-val {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 21px;
+  font-weight: 700;
 }
 
-.ah-metric-val {
-    font-size: 22px;
-    font-weight: 700;
-    color: #fff;
-    font-family: 'JetBrains Mono', monospace;
+.db-gauge-val small {
+  font-size: 10px;
+  color: #505872;
+  font-weight: 500;
+  margin-top: 1px;
 }
 
-.ah-net-pill {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    font-size: 11px;
-    font-weight: 600;
-    padding: 2px 6px;
-    border-radius: 4px;
-    font-family: 'JetBrains Mono', monospace;
+.db-gauge-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #8b92a8;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
 }
 
-.ah-net-pill.dn {
-    color: #10b981;
-    background: rgba(16, 185, 129, 0.1);
+.db-gauge-sub {
+  font-size: 10.5px;
+  color: #505872;
+  margin-top: 3px;
+  font-family: 'JetBrains Mono', monospace;
 }
 
-.ah-net-pill.up {
-    color: #3b82f6;
-    background: rgba(59, 130, 246, 0.1);
+/* Network center content */
+.db-net-center {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
 }
 
-/* Main Grid Layout */
-.ah-grid {
-    display: grid;
-    grid-template-columns: 2fr 1fr;
-    gap: 24px;
+.db-net-line {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 12px;
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 700;
 }
 
-.ah-charts-col {
-    display: flex;
-    flex-direction: column;
-    gap: 24px;
+.db-net-line.up { color: #22c55e; }
+.db-net-line.dn { color: #4f8fff; }
+
+.db-net-unit {
+  font-size: 8.5px;
+  color: #505872;
+  font-weight: 600;
+  letter-spacing: 0.04em;
 }
 
-.ah-side-col {
-    display: flex;
-    flex-direction: column;
-    gap: 24px;
+/* ═══════════════════════════════════════
+   MAIN GRID
+   ═══════════════════════════════════════ */
+.db-main-grid {
+  display: grid;
+  grid-template-columns: 1fr 340px;
+  gap: 14px;
 }
 
-/* Base Card Style */
-.ah-chart-card,
-.ah-side-card {
-    background: #11141d;
-    border: 1px solid #1f2532;
-    border-radius: 12px;
-    padding: 20px;
+.db-charts-col {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
 }
 
-.ah-chart-card h3,
-.ah-side-card h3 {
-    margin: 0 0 16px 0;
-    font-size: 16px;
-    font-weight: 600;
-    color: #e5e7eb;
+.db-side-col {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
 }
 
-.ah-card-desc {
-    margin: -12px 0 16px 0;
-    font-size: 12px;
-    color: #9ca3af;
+/* ═══════════════════════════════════════
+   CARD BASE
+   ═══════════════════════════════════════ */
+.db-card {
+  background: #0c0f16;
+  border: 1px solid #1a1f2e;
+  border-radius: 14px;
+  padding: 18px 20px;
+  transition: border-color 0.2s;
 }
 
-.ah-chart-wrapper {
-    width: 100%;
-    height: 250px;
+.db-card:hover { border-color: #252b3d; }
+
+.db-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
 }
 
-/* Top Processes List */
-.ah-proc-list {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
+.db-card-title {
+  font-size: 13px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
-.ah-proc-item {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    background: #0b0e14;
-    border: 1px solid #1f2532;
-    padding: 10px 12px;
-    border-radius: 8px;
+.db-card-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
-.ah-proc-name {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 12px;
-    color: #e5e7eb;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 120px;
+.db-card-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 3px 9px;
+  border-radius: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
-.ah-proc-stats {
-    display: flex;
-    gap: 12px;
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 11px;
-    font-weight: 600;
+/* Chart area */
+.db-chart-wrap {
+  width: 100%;
+  height: 200px;
 }
 
-/* Disks (reused partials) */
-.disk-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 6px;
+/* ═══════════════════════════════════════
+   PROCESS TABLE
+   ═══════════════════════════════════════ */
+.db-proc-table {
+  width: 100%;
+  border-collapse: collapse;
 }
 
-/* Responsiveness */
-@media (max-width: 1024px) {
-    .ah-grid {
-        grid-template-columns: 1fr;
-    }
+.db-proc-table th {
+  text-align: left;
+  font-size: 9.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #505872;
+  padding: 0 6px 8px;
+  border-bottom: 1px solid #1a1f2e;
+}
+
+.db-proc-table td {
+  padding: 7px 6px;
+  font-size: 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.02);
+}
+
+.db-proc-table tr:hover td {
+  background: rgba(255, 255, 255, 0.015);
+}
+
+.db-proc-name {
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 500;
+  color: #f0f2f5;
+  max-width: 100px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.db-proc-pid {
+  color: #505872;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10.5px;
+}
+
+.db-proc-bar-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.db-proc-bar {
+  flex: 1;
+  height: 4px;
+  background: #1a1f2e;
+  border-radius: 2px;
+  overflow: hidden;
+  min-width: 40px;
+}
+
+.db-proc-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.5s ease;
+}
+
+.db-proc-bar-val {
+  font-size: 10.5px;
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 600;
+  min-width: 28px;
+  text-align: right;
+}
+
+/* ═══════════════════════════════════════
+   DISK / STORAGE
+   ═══════════════════════════════════════ */
+.db-disk-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.db-disk-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: #12151e;
+  border-radius: 10px;
+  padding: 11px 13px;
+}
+
+.db-disk-icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: rgba(79, 143, 255, 0.08);
+  color: #4f8fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.db-disk-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.db-disk-label {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.db-disk-usage {
+  font-size: 10px;
+  color: #505872;
+  font-family: 'JetBrains Mono', monospace;
+  margin-top: 1px;
+}
+
+.db-disk-bar {
+  width: 100%;
+  height: 3px;
+  background: #1a1f2e;
+  border-radius: 2px;
+  margin-top: 5px;
+  overflow: hidden;
+}
+
+.db-disk-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.8s ease;
+}
+
+.db-disk-pct {
+  font-size: 14px;
+  font-weight: 700;
+  font-family: 'JetBrains Mono', monospace;
+  min-width: 36px;
+  text-align: right;
+}
+
+/* ═══════════════════════════════════════
+   BOTTOM ROW
+   ═══════════════════════════════════════ */
+.db-bottom-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.db-qi-card {
+  background: #0c0f16;
+  border: 1px solid #1a1f2e;
+  border-radius: 14px;
+  padding: 16px 18px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  transition: border-color 0.2s;
+}
+
+.db-qi-card:hover { border-color: #252b3d; }
+
+.db-qi-icon {
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.db-qi-info {
+  display: flex;
+  flex-direction: column;
+}
+
+.db-qi-label {
+  font-size: 10.5px;
+  color: #505872;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.db-qi-value {
+  font-size: 15px;
+  font-weight: 700;
+  font-family: 'JetBrains Mono', monospace;
+  margin-top: 2px;
+}
+
+.db-qi-na {
+  color: #505872 !important;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+/* ═══════════════════════════════════════
+   RESPONSIVE
+   ═══════════════════════════════════════ */
+@media (max-width: 1100px) {
+  .db-main-grid { grid-template-columns: 1fr; }
+  .db-gauge-row { grid-template-columns: repeat(2, 1fr); }
 }
 
 @media (max-width: 640px) {
-    .analytics-container {
-        padding: 20px;
-    }
-
-    .ah-header {
-        flex-direction: column;
-        align-items: flex-start;
-        gap: 16px;
-    }
+  .db-container { padding: 16px; }
+  .db-gauge-row { grid-template-columns: 1fr 1fr; }
+  .db-bottom-row { grid-template-columns: 1fr; }
+  .db-header { flex-direction: column; align-items: flex-start; gap: 12px; }
 }
 
-/* Skeletons */
+/* ═══════════════════════════════════════
+   SKELETONS
+   ═══════════════════════════════════════ */
 .skeleton {
-    background: #1f2532;
-    background-image: linear-gradient(90deg,
-            rgba(255, 255, 255, 0) 0,
-            rgba(255, 255, 255, 0.05) 20%,
-            rgba(255, 255, 255, 0) 40%,
-            rgba(255, 255, 255, 0));
-    background-size: 200px 100%;
-    background-repeat: no-repeat;
-    animation: shimmer 1.5s infinite linear;
-    border-radius: 4px;
+  background: #1a1f2e;
+  background-image: linear-gradient(90deg,
+    rgba(255,255,255,0) 0,
+    rgba(255,255,255,0.04) 20%,
+    rgba(255,255,255,0) 40%,
+    rgba(255,255,255,0));
+  background-size: 200px 100%;
+  background-repeat: no-repeat;
+  animation: shimmer 1.5s infinite linear;
+  border-radius: 4px;
 }
 
 @keyframes shimmer {
-    0% {
-        background-position: -200px 0;
-    }
-
-    100% {
-        background-position: calc(200px + 100%) 0;
-    }
+  0% { background-position: -200px 0; }
+  100% { background-position: calc(200px + 100%) 0; }
 }

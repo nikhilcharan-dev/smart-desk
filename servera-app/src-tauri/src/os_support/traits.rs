@@ -32,6 +32,9 @@ pub trait PackageManager: Send + Sync {
 pub struct SystemMetrics {
     pub os_name: String,
     pub uptime: String,
+    pub kernel: String,
+    pub arch: String,
+    pub cpu_cores: u32,
     pub cpu_usage: f32,
     pub mem_total_mb: u64,
     pub mem_used_mb: u64,
