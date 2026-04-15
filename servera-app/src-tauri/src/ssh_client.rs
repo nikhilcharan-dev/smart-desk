@@ -17,12 +17,37 @@ const READ_BUF_SIZE: usize = 8192;
 /// Chunk size for file transfers (64KB)
 const TRANSFER_CHUNK_SIZE: usize = 65536;
 
+#[derive(Serialize, Deserialize, Clone, Debug, Copy, PartialEq)]
+pub enum RemoteOs {
+    Linux,
+    Darwin, // macOS
+    Windows,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct FileNode {
     pub name: String,
     pub path: String,
     pub is_dir: bool,
     pub size: u64,
+}
+
+impl RemoteOs {
+    pub fn from_str(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "darwin" => RemoteOs::Darwin,
+            "windows" => RemoteOs::Windows,
+            _ => RemoteOs::Linux,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RemoteOs::Linux => "linux",
+            RemoteOs::Darwin => "darwin",
+            RemoteOs::Windows => "windows",
+        }
+    }
 }
 
 pub struct SshConnection {
@@ -278,6 +303,7 @@ fn establish_session(
 
 pub struct SshExecConn {
     pub session: Session,
+    pub remote_os: RemoteOs,
 }
 
 impl SshExecConn {
@@ -289,12 +315,45 @@ impl SshExecConn {
         private_key: Option<&str>,
         proxy_jump: Option<&str>,
         app: &AppHandle,
-        session_id: &str
+        session_id: &str,
+        fixed_os: Option<RemoteOs>
     ) -> Result<Self, String> {
         let mut sess = Session::new().map_err(|e| format!("Failed to create SSH session: {}", e))?;
         establish_session(&mut sess, ip, port, user, password, private_key, proxy_jump, app, session_id)?;
         sess.set_blocking(true); 
-        Ok(Self { session: sess })
+
+        let remote_os = if let Some(os) = fixed_os {
+            os
+        } else {
+            Self::detect_os(&sess)
+        };
+
+        Ok(Self { session: sess, remote_os })
+    }
+
+    fn detect_os(sess: &Session) -> RemoteOs {
+        // 1. Try 'uname -s'
+        if let Ok(mut ch) = sess.channel_session() {
+            if ch.exec("uname -s").is_ok() {
+                let mut s = String::new();
+                let _ = ch.read_to_string(&mut s);
+                let name = s.trim().to_lowercase();
+                if name.contains("linux") { return RemoteOs::Linux; }
+                if name.contains("darwin") { return RemoteOs::Darwin; }
+            }
+        }
+
+        // 2. Try 'ver' for Windows
+        if let Ok(mut ch) = sess.channel_session() {
+            if ch.exec("ver").is_ok() {
+                let mut s = String::new();
+                let _ = ch.read_to_string(&mut s);
+                if s.to_lowercase().contains("windows") { return RemoteOs::Windows; }
+            }
+        }
+
+        // 3. Fallback to Linux
+        RemoteOs::Linux
     }
 
     pub fn exec_command(&self, command: &str) -> Result<String, String> {
@@ -307,12 +366,18 @@ impl SshExecConn {
     }
 
     pub fn exec_zip(&self, src: &str, dest: &str) -> Result<String, String> {
-        let cmd = format!("zip -r {} {}", shell_escape(dest), shell_escape(src));
+        let cmd = match self.remote_os {
+            RemoteOs::Windows => format!("powershell -NoProfile -Command \"Compress-Archive -Path '{}' -DestinationPath '{}' -Force\"", src, dest),
+            _ => format!("zip -r {} {}", shell_escape(dest), shell_escape(src)),
+        };
         self.exec_command(&cmd)
     }
 
     pub fn exec_unzip(&self, src: &str, dest: &str) -> Result<String, String> {
-        let cmd = format!("unzip {} -d {}", shell_escape(src), shell_escape(dest));
+        let cmd = match self.remote_os {
+            RemoteOs::Windows => format!("powershell -NoProfile -Command \"Expand-Archive -Path '{}' -DestinationPath '{}' -Force\"", src, dest),
+            _ => format!("unzip {} -d {}", shell_escape(src), shell_escape(dest)),
+        };
         self.exec_command(&cmd)
     }
 
@@ -367,14 +432,29 @@ impl SshExecConn {
     pub fn sftp_write_sudo(&self, path: &str, content: &[u8]) -> Result<(), String> {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
-        let temp_path = format!("/tmp/servera_upload_{}", timestamp);
+        
         let sftp = self.session.sftp().map_err(|e| e.to_string())?;
-        let mut file = sftp.create(Path::new(&temp_path)).map_err(|e| e.to_string())?;
-        file.write_all(content).map_err(|e| e.to_string())?;
-        drop(file); drop(sftp);
-        let cmd = format!("sudo cp {} {}", shell_escape(&temp_path), shell_escape(path));
-        self.exec_command(&cmd)?;
-        let _ = self.exec_command(&format!("rm {}", shell_escape(&temp_path)));
+        
+        match self.remote_os {
+            RemoteOs::Windows => {
+                // Windows usually doesn't need sudo-like copy if SSH is admin, but we follow the temp pattern
+                let temp_path = format!("C:\\Windows\\Temp\\servera_upload_{}", timestamp);
+                let mut file = sftp.create(Path::new(&temp_path)).map_err(|e| e.to_string())?;
+                file.write_all(content).map_err(|e| e.to_string())?;
+                drop(file); drop(sftp);
+                let cmd = format!("powershell -NoProfile -Command \"Copy-Item -Path '{}' -Destination '{}' -Force; Remove-Item '{}'\"", temp_path, path, temp_path);
+                self.exec_command(&cmd)?;
+            }
+            _ => {
+                let temp_path = format!("/tmp/servera_upload_{}", timestamp);
+                let mut file = sftp.create(Path::new(&temp_path)).map_err(|e| e.to_string())?;
+                file.write_all(content).map_err(|e| e.to_string())?;
+                drop(file); drop(sftp);
+                let cmd = format!("sudo cp {} {}", shell_escape(&temp_path), shell_escape(path));
+                self.exec_command(&cmd)?;
+                let _ = self.exec_command(&format!("rm {}", shell_escape(&temp_path)));
+            }
+        }
         Ok(())
     }
 
@@ -415,29 +495,54 @@ impl SshExecConn {
     }
 
     pub fn sftp_delete_sudo(&self, path: &str, is_dir: bool) -> Result<(), String> {
-        let cmd = if is_dir {
-            format!("sudo rm -rf {}", shell_escape(path))
-        } else {
-            format!("sudo rm -f {}", shell_escape(path))
+        let cmd = match self.remote_os {
+            RemoteOs::Windows => {
+                if is_dir {
+                    format!("powershell -NoProfile -Command \"Remove-Item -Path '{}' -Recurse -Force\"", path)
+                } else {
+                    format!("powershell -NoProfile -Command \"Remove-Item -Path '{}' -Force\"", path)
+                }
+            }
+            _ => {
+                if is_dir {
+                    format!("sudo rm -rf {}", shell_escape(path))
+                } else {
+                    format!("sudo rm -f {}", shell_escape(path))
+                }
+            }
         };
         self.exec_command(&cmd).map(|_| ())
     }
 
     pub fn get_user_info(&self) -> Result<String, String> {
-        self.exec_command("whoami; id; groups")
+        match self.remote_os {
+            RemoteOs::Windows => self.exec_command("whoami; powershell -NoProfile -Command \"[Security.Principal.WindowsIdentity]::GetCurrent().Groups\""),
+            _ => self.exec_command("whoami; id; groups"),
+        }
     }
 
     pub fn sftp_get_permissions(&self, path: &str) -> Result<String, String> {
-        self.exec_command(&format!("ls -ld {}", shell_escape(path)))
+        match self.remote_os {
+            RemoteOs::Windows => self.exec_command(&format!("powershell -NoProfile -Command \"Get-Item '{}' | Select-Object Mode, LastWriteTime, Length, Name | Out-String\"", path)),
+            _ => self.exec_command(&format!("ls -ld {}", shell_escape(path))),
+        }
     }
 
     pub fn upgrade_access(&self, path: &str, action: &str) -> Result<String, String> {
-        let cmd = match action {
-            "exec" => format!("chmod +x {}", shell_escape(path)),
-            "full" => format!("chmod 777 {}", shell_escape(path)),
-            "own" => format!("sudo chown $USER:$USER {}", shell_escape(path)),
-            "sudoer" => "sudo usermod -aG sudo $USER || sudo usermod -aG wheel $USER".to_string(),
-            _ => return Err("Invalid upgrade action".into()),
+        let cmd = match self.remote_os {
+            RemoteOs::Windows => match action {
+                "exec" => format!("attrib -r '{}'", path),
+                "full" => format!("powershell -NoProfile -Command \"$acl = Get-Acl '{}'; $rule = New-Object System.Security.AccessControl.FileSystemAccessRule('Everyone','FullControl','Allow'); $acl.SetAccessRule($rule); Set-Acl '{}' $acl\"", path, path),
+                "own" => format!("powershell -NoProfile -Command \"takeown /f '{}' /r /d y\"", path),
+                _ => return Err("Invalid upgrade action for Windows".into()),
+            },
+            _ => match action {
+                "exec" => format!("chmod +x {}", shell_escape(path)),
+                "full" => format!("chmod 777 {}", shell_escape(path)),
+                "own" => format!("sudo chown $USER:$USER {}", shell_escape(path)),
+                "sudoer" => "sudo usermod -aG sudo $USER || sudo usermod -aG wheel $USER".to_string(),
+                _ => return Err("Invalid upgrade action".into()),
+            }
         };
         self.exec_command(&cmd)
     }
@@ -466,15 +571,19 @@ impl SshExecConn {
         result
     }
 
-    /// Upload via /tmp then sudo mv — for paths that require elevated permissions.
+    /// Upload via /tmp or C:\Windows\Temp then elevated move — for paths that require elevated permissions.
     pub fn sftp_upload_sudo(&self, app: &AppHandle, local_path: &str, remote_path: &str) -> Result<(), String> {
         let path = Path::new(local_path);
         let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
-        let temp_remote = format!("/tmp/servera_sudo_{}", timestamp);
+        
+        let temp_remote = match self.remote_os {
+            RemoteOs::Windows => format!("C:\\Windows\\Temp\\servera_sudo_{}", timestamp),
+            _ => format!("/tmp/servera_sudo_{}", timestamp),
+        };
 
-        // Upload to /tmp/ first (user always has write access there)
+        // Upload to temp staging area first (user usually has write access there)
         let sftp = self.session.sftp().map_err(|e| e.to_string())?;
         let result = if path.is_dir() {
             self.do_sftp_upload_recursive(app, &sftp, local_path, &temp_remote, &name)
@@ -486,20 +595,30 @@ impl SshExecConn {
         if let Err(ref e) = result {
             let _ = app.emit("transfer-progress", serde_json::json!({
                 "root_name": name, "filename": name, "status": "error",
-                "details": format!("Upload failed: {}", e), "error": e.to_string()
+                "details": format!("Upload to staging failed: {}", e), "error": e.to_string()
             }));
             return result;
         }
 
-        // Move from temp to final destination with sudo
-        let mv_cmd = format!("sudo mv -f {} {}", shell_escape(&temp_remote), shell_escape(remote_path));
+        // Move from temp to final destination with elevation
+        let (mv_cmd, rm_cmd) = match self.remote_os {
+            RemoteOs::Windows => (
+                format!("powershell -NoProfile -Command \"Move-Item -Path '{}' -Destination '{}' -Force\"", temp_remote, remote_path),
+                format!("powershell -NoProfile -Command \"Remove-Item -Path '{}' -Recurse -Force\"", temp_remote)
+            ),
+            _ => (
+                format!("sudo mv -f {} {}", shell_escape(&temp_remote), shell_escape(remote_path)),
+                format!("rm -rf {}", shell_escape(&temp_remote))
+            )
+        };
+
         if let Err(e) = self.exec_command(&mv_cmd) {
-            let _ = self.exec_command(&format!("rm -rf {}", shell_escape(&temp_remote)));
+            let _ = self.exec_command(&rm_cmd);
             let _ = app.emit("transfer-progress", serde_json::json!({
                 "root_name": name, "filename": name, "status": "error",
-                "details": format!("Sudo move failed: {}", e), "error": e.to_string()
+                "details": format!("Elevated move failed: {}", e), "error": e.to_string()
             }));
-            return Err(format!("Sudo move failed: {}", e));
+            return Err(format!("Elevated move failed: {}", e));
         }
 
         let _ = app.emit("transfer-progress", serde_json::json!({

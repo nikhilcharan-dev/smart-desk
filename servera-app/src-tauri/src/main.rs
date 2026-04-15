@@ -161,8 +161,9 @@ async fn connect_to_profile(
 ) -> Result<String, String> {
     tokio::task::block_in_place(|| {
         let mgr = ProfileManager::new(&app);
-        let profiles = mgr.load()?;
-        let profile = profiles.iter().find(|p| p.id == profile_id).ok_or("Profile not found")?;
+        let mut profiles = mgr.load()?;
+        let profile_idx = profiles.iter().position(|p| p.id == profile_id).ok_or("Profile not found")?;
+        let profile = &profiles[profile_idx];
 
         let key_user = format!("profile:{}", profile_id);
         let password = profile_manager::get_password("servera", &key_user).ok();
@@ -188,16 +189,26 @@ async fn connect_to_profile(
         *guard = Some(conn);
         drop(guard);
 
+        let stored_os = profiles[profile_idx].remote_os.as_ref().map(|s| ssh_client::RemoteOs::from_str(s));
+
         let exec_conn = SshExecConn::connect(
-            &profile.ip, 
-            &profile.user, 
-            profile.port,
+            &profiles[profile_idx].ip, 
+            &profiles[profile_idx].user, 
+            profiles[profile_idx].port,
             password.as_deref(), 
-            profile.private_key_path.as_deref(),
-            profile.proxy_jump.as_deref(),
+            profiles[profile_idx].private_key_path.as_deref(),
+            profiles[profile_idx].proxy_jump.as_deref(),
             &app,
-            &session_id
+            &session_id,
+            stored_os
         )?;
+
+        // If OS was just detected, persist it
+        if stored_os.is_none() {
+            profiles[profile_idx].remote_os = Some(exec_conn.remote_os.as_str().to_string());
+            let _ = mgr.save(profiles);
+        }
+
         let exec = state.ensure_exec_conn(&session_id);
         *lock_exec(&exec) = Some(exec_conn);
 
@@ -231,7 +242,7 @@ async fn start_ssh_session(
         *guard = Some(conn);
         drop(guard);
 
-        let exec_conn = SshExecConn::connect(&ip, &user, port, password.as_deref(), private_key.as_deref(), proxy_jump.as_deref(), &app, &session_id)?;
+        let exec_conn = SshExecConn::connect(&ip, &user, port, password.as_deref(), private_key.as_deref(), proxy_jump.as_deref(), &app, &session_id, None)?;
         let exec = state.ensure_exec_conn(&session_id);
         *lock_exec(&exec) = Some(exec_conn);
 
@@ -854,7 +865,7 @@ async fn get_standard_metrics(state: State<'_, AppState>, session_id: String) ->
         let guard = lock_exec(&exec);
         let conn = guard.as_ref().ok_or_else(|| "No active exec session".to_string())?;
         
-        let monitor = os_support::get_default_monitor();
+        let monitor = os_support::get_monitor(conn.remote_os);
         let output = conn.exec_command(&monitor.gather_stats_cmd())?;
         monitor.parse_stats(&output)
     })
@@ -878,11 +889,26 @@ async fn start_log_stream(
     private_key: Option<String>,
     proxy_jump: Option<String>,
 ) -> Result<(), String> {
+    // Determine OS from existing session if possible
+    let remote_os = state.get_exec_conn(&session_id)
+        .and_then(|exec| {
+            let guard = lock_exec(&exec);
+            guard.as_ref().map(|c| c.remote_os)
+        })
+        .unwrap_or(ssh_client::RemoteOs::Linux);
+
     tokio::task::block_in_place(|| {
         let command = if log_path == "__journalctl__" {
-            "journalctl -f --no-pager 2>/dev/null || echo 'journalctl not available'".to_string()
+            match remote_os {
+                ssh_client::RemoteOs::Darwin => "log stream --style syslog".to_string(),
+                ssh_client::RemoteOs::Windows => "powershell -NoProfile -Command \"Get-WinEvent -LogName System -MaxEvents 50\"".to_string(),
+                _ => "journalctl -f --no-pager 2>/dev/null || echo 'journalctl not available'".to_string(),
+            }
         } else {
-            format!("tail -f {} 2>/dev/null || echo 'Cannot stream'", log_path)
+            match remote_os {
+                ssh_client::RemoteOs::Windows => format!("powershell -NoProfile -Command \"Get-Content -Path '{}' -Wait -Tail 20\"", log_path),
+                _ => format!("tail -f {} 2>/dev/null || echo 'Cannot stream'", log_path),
+            }
         };
 
         let (session, channel) = ssh_client::open_stream_channel(
@@ -1065,6 +1091,7 @@ async fn fleet_run_command(
                 profile.proxy_jump.as_deref(),
                 &app_clone,
                 &session_id,
+                None,
             ) {
                 Ok(conn) => {
                     let output = conn.exec_command(&cmd).unwrap_or_else(|e| e);

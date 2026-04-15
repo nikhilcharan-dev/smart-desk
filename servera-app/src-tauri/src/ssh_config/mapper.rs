@@ -28,6 +28,7 @@ pub fn map_entry_to_profile(entry: &SshConfigEntry) -> Vec<Profile> {
             color: None,
             last_connected: None,
             proxy_jump,
+            remote_os: None,
         });
     }
 

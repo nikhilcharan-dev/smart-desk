@@ -6,7 +6,7 @@ import { MAIN_SESSION_ID } from "../../utils/terminal";
 import logo from "../../assets/logo-32.png";
 import ImportWizard from "../../components/Onboarding/ImportWizard";
 import Modal from "../../components/Common/Modal";
-import { Download, Plus, Server, Pencil, Trash2, Key, Lock, ShieldCheck, Waypoints, Globe, User, Hash, Tag, LayoutList, LayoutGrid } from "lucide-react";
+import { Download, Plus, Server, Pencil, Trash2, Key, Lock, ShieldCheck, Waypoints, Globe, User, Hash, Tag, LayoutList, LayoutGrid, Monitor, Laptop } from "lucide-react";
 
 /* ───────── SSH Key Card (inline) ───────── */
 
@@ -475,7 +475,14 @@ export default function ConnectionHub({ isEntering, setConnected, setUser: setGl
                                     >
                                         <div className="tile-accent" style={{ background: p.color || "#3b82f6" }} />
                                         <div className="tile-body">
-                                            <div className="tile-name">{p.name}</div>
+                                            <div className="tile-title-row">
+                                                <div className="tile-name">{p.name}</div>
+                                                {p.remote_os && (
+                                                    <div className="tile-os-icon" title={p.remote_os}>
+                                                        {p.remote_os === 'windows' ? <Monitor size={10} /> : p.remote_os === 'darwin' ? <Laptop size={10} /> : <Server size={10} />}
+                                                    </div>
+                                                )}
+                                            </div>
                                             <div className="tile-host">{p.ip}</div>
                                             <div className="tile-user">{p.user}<span className="tile-port">:{p.port || 22}</span></div>
                                         </div>
@@ -498,7 +505,14 @@ export default function ConnectionHub({ isEntering, setConnected, setUser: setGl
                                     >
                                         <div className="profile-dot" style={{ background: p.color || "#3b82f6" }} />
                                         <div className="profile-info">
-                                            <span className="profile-name">{p.name}</span>
+                                            <div className="profile-title-line">
+                                                <span className="profile-name">{p.name}</span>
+                                                {p.remote_os && (
+                                                    <div className="profile-os-badge" title={p.remote_os}>
+                                                        {p.remote_os === 'windows' ? <Monitor size={10} /> : p.remote_os === 'darwin' ? <Laptop size={10} /> : <Server size={10} />}
+                                                    </div>
+                                                )}
+                                            </div>
                                             <span className="profile-sub">
                                                 {p.user}@{p.ip}<span className="profile-port">:{p.port || 22}</span>
                                             </span>

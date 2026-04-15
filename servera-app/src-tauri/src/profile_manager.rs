@@ -19,6 +19,8 @@ pub struct Profile {
     pub last_connected: Option<u64>,
     #[serde(default)]
     pub proxy_jump: Option<String>,
+    #[serde(default)]
+    pub remote_os: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Default)]
