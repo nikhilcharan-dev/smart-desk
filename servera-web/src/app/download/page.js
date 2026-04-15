@@ -360,7 +360,7 @@ export default function DownloadPage() {
               <p style={{ color: "var(--text-2)", marginBottom: "0.5rem", fontSize: "0.9rem" }}>Requires Windows 10 / 11 (x64)</p>
 
               <div className="mono" style={{ fontSize: "0.75rem", color: "var(--violet-2)", marginBottom: "2.5rem", padding: "0.5rem 0.85rem", background: "var(--violet-sub)", borderRadius: 8, display: "inline-block", alignSelf: "flex-start" }}>
-                v0.1.0
+                v0.3.0
               </div>
 
               <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem", marginBottom: "3rem" }}>
@@ -419,7 +419,7 @@ export default function DownloadPage() {
               <p style={{ color: "var(--text-2)", marginBottom: "0.5rem", fontSize: "0.9rem" }}>macOS 12 Monterey or later (Universal)</p>
 
               <div className="mono" style={{ fontSize: "0.75rem", color: "var(--cyan-2)", marginBottom: "2.5rem", padding: "0.5rem 0.85rem", background: "var(--cyan-sub)", borderRadius: 8, display: "inline-block", alignSelf: "flex-start" }}>
-                v0.1.0
+                v0.3.0
               </div>
 
               <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem", marginBottom: "3rem" }}>
@@ -478,7 +478,7 @@ export default function DownloadPage() {
               <p style={{ color: "var(--text-2)", marginBottom: "0.5rem", fontSize: "0.9rem" }}>Ubuntu, Debian, Fedora & more (x64)</p>
 
               <div className="mono" style={{ fontSize: "0.75rem", color: "var(--emerald)", marginBottom: "2.5rem", padding: "0.5rem 0.85rem", background: "rgba(16,185,129,0.06)", borderRadius: 8, display: "inline-block", alignSelf: "flex-start" }}>
-                v0.1.0
+                v0.3.0
               </div>
 
               <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem", marginBottom: "3rem" }}>
