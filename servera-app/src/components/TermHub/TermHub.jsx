@@ -31,6 +31,11 @@ export default function TermHub() {
     }, []);
 
     const handleConnect = async (profile) => {
+        if (!navigator.onLine) {
+            alert("No internet connection. Please enable internet connection to proceed with SSH.");
+            return;
+        }
+
         setConnectionStates(prev => ({ ...prev, [profile.id]: 'connecting' }));
         try {
             const sessionId = `term-${profile.id}`;

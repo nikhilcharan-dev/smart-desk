@@ -129,6 +129,11 @@ export default function ConnectionHub({ isEntering, setConnected, setUser: setGl
 
     const handleConnect = async (e) => {
         e.preventDefault();
+        if (!navigator.onLine) {
+            alert("No internet connection. Please enable internet connection to proceed with SSH.");
+            return;
+        }
+
         setError("");
         setIsLoading(true);
         setIsConnecting(true);
@@ -157,6 +162,11 @@ export default function ConnectionHub({ isEntering, setConnected, setUser: setGl
     };
 
     const handleProfileConnect = async (profile) => {
+        if (!navigator.onLine) {
+            alert("No internet connection. Please enable internet connection to proceed with SSH.");
+            return;
+        }
+
         setError("");
         setIsLoading(true);
         setIsConnecting(true);
