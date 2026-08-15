@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Servera",
-  "version": "0.3.0",
+  "version": "2.0.0",
   "identifier": "com.servera.smartdesk",
   "build": {
     "frontendDist": "../dist",
@@ -17,12 +17,13 @@
         "height": 700,
         "resizable": true,
         "fullscreen": false,
+        "maximized": true,
         "center": true,
         "decorations": true
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' http://127.0.0.1:* http://localhost:* https://* http://*; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; script-src 'self' 'unsafe-inline'; img-src 'self' asset: data:"
+      "csp": "default-src 'self'; connect-src 'self' http://127.0.0.1:* http://localhost:*; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; script-src 'self' 'unsafe-inline'; img-src 'self' asset: data:"
     }
   },
   "bundle": {

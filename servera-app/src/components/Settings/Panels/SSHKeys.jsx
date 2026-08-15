@@ -56,15 +56,26 @@ export default function SSHKeys() {
     }, []);
 
     const handleAddKey = async () => {
-        if (!newKey.trim()) return;
+        const key = newKey.trim();
+        if (!key) return;
+
+        // Validate the shape before it ever reaches a shell — a public key has a
+        // known grammar, so reject anything that doesn't match rather than only
+        // escaping. This blocks command injection at the source.
+        if (!/^(ssh-(rsa|ed25519|dss)|ecdsa-sha2-nistp(256|384|521))\s+[A-Za-z0-9+/]+={0,3}(\s+\S.*)?$/.test(key)) {
+            setAddStatus({ type: 'error', msg: 'Not a valid OpenSSH public key.' });
+            return;
+        }
+
         setLoading(true);
         setAddStatus(null);
         try {
-            // Echo the key and append it safely
-            // Wrapping the key in single quotes prevents shell expansion issues
+            // Escape single quotes (the shell single-quote idiom) and ensure the
+            // ~/.ssh dir exists with correct perms before appending.
+            const safeKey = key.replace(/'/g, "'\\''");
             await invoke("exec_ssh_command", {
                 sessionId: MAIN_SESSION_ID,
-                command: `echo '${newKey.trim()}' >> ~/.ssh/authorized_keys`
+                command: `mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo '${safeKey}' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys`
             });
             setAddStatus({ type: 'success', msg: 'Key added successfully' });
             setNewKey("");

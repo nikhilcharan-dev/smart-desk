@@ -1,0 +1,173 @@
+.topbar {
+    height: 34px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 12px;
+    background: #080a0f;
+    border-bottom: 1px solid #1f2532;
+    z-index: 30;
+}
+
+.topbar-left {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+}
+
+.topbar-conn {
+    font-size: 12px;
+    color: #6b7280;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.topbar-right {
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+
+.topbar-icon-btn {
+    background: transparent;
+    border: none;
+    color: #6b7280;
+    cursor: pointer;
+    padding: 5px 7px;
+    border-radius: 5px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s, color 0.15s;
+}
+
+.topbar-icon-btn:hover {
+    background: #1f2532;
+}
+
+.topbar-icon-btn.connected {
+    color: #3fb950;
+}
+
+.topbar-icon-btn.connecting {
+    color: #d29922;
+}
+
+.topbar-icon-btn.error {
+    color: #f85149;
+}
+
+.topbar-popover {
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    z-index: 40;
+    width: 280px;
+    background: #11141d;
+    border: 1px solid #1f2532;
+    border-radius: 10px;
+    padding: 10px;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+    animation: topbar-fade-in 0.15s ease-out;
+}
+
+@keyframes topbar-fade-in {
+    from { opacity: 0; transform: translateY(-4px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.topbar-popover-title {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #6b7280;
+    padding: 2px 6px 8px;
+}
+
+.topbar-popover-empty {
+    font-size: 12px;
+    color: #6b7280;
+    text-align: center;
+    padding: 16px 8px;
+}
+
+.topbar-popover-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.topbar-gw-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    padding: 8px 6px;
+    cursor: pointer;
+    text-align: left;
+}
+
+.topbar-gw-row:hover:not(:disabled) {
+    background: #1f2532;
+}
+
+.topbar-gw-row:disabled {
+    opacity: 0.6;
+    cursor: default;
+}
+
+.topbar-gw-row.active {
+    background: rgba(63, 185, 80, 0.08);
+}
+
+.topbar-gw-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #4b5563;
+    flex-shrink: 0;
+}
+
+.topbar-gw-dot.on {
+    background: #3fb950;
+    box-shadow: 0 0 0 3px rgba(63, 185, 80, 0.2);
+}
+
+.topbar-gw-dot.error {
+    background: #f85149;
+    box-shadow: 0 0 0 3px rgba(248, 81, 73, 0.2);
+}
+
+.topbar-gw-name {
+    flex: 1;
+    min-width: 0;
+    font-size: 12px;
+    color: #e5e7eb;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.topbar-gw-status {
+    flex-shrink: 0;
+    font-size: 11px;
+    color: #9ca3af;
+}
+
+.topbar-popover-error {
+    margin-top: 6px;
+    font-size: 11px;
+    color: #f85149;
+    padding: 6px;
+    border-radius: 6px;
+    background: rgba(248, 81, 73, 0.08);
+}

@@ -37,7 +37,7 @@ function ContainerLogs({ containerId, containerName, onClose }) {
         if (streaming) {
             // Stop stream
             if (streamIdRef.current) {
-                try { await invoke('stop_log_stream', { streamId: streamIdRef.current }); } catch {}
+                try { await invoke('stop_log_stream', { streamId: streamIdRef.current }); } catch { /* best-effort teardown — stream is being discarded anyway */ }
                 streamIdRef.current = null;
             }
             if (unlistenRef.current) { unlistenRef.current(); unlistenRef.current = null; }

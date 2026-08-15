@@ -60,6 +60,11 @@ export default function FileEditor({ file, mode, onClose, onSaveSuccess }) {
     const [error, setError] = useState(null);
     const [language, setLanguage] = useState("plaintext");
     const { progress, phaseLabel, advanceTo, advanceToWithDone } = useFileProgress();
+    // Original line-ending style of the loaded file — preserved on save so
+    // Monaco's platform-default EOL (CRLF on Windows) never gets baked into
+    // remote text files that were LF (e.g. Linux configs, shebangs).
+    const eolRef = useRef("\n");
+    const monacoRef = useRef(null);
 
     useEffect(() => {
         const detectLanguage = (filename) => {
@@ -104,7 +109,23 @@ export default function FileEditor({ file, mode, onClose, onSaveSuccess }) {
 
                 // Phase 2 → 93%: decoding
                 advanceTo(2);
-                const text = new TextDecoder().decode(new Uint8Array(bytes));
+                const raw = new Uint8Array(bytes);
+
+                // Refuse binary files — TextDecoder silently replaces invalid
+                // UTF-8 with U+FFFD, and saving would write that back as
+                // different bytes, corrupting the file. A NUL in the first 8KB
+                // is a reliable binary signal; a strict decode catches the rest.
+                if (raw.subarray(0, 8192).includes(0)) {
+                    throw new Error("This looks like a binary file — opening it here would corrupt it.");
+                }
+                let text;
+                try {
+                    text = new TextDecoder("utf-8", { fatal: true }).decode(raw);
+                } catch {
+                    throw new Error("File is not valid UTF-8 — cannot edit safely.");
+                }
+
+                eolRef.current = /\r\n/.test(text) ? "\r\n" : "\n";
                 setContent(text);
                 setLanguage(detectLanguage(file.name));
 
@@ -120,15 +141,25 @@ export default function FileEditor({ file, mode, onClose, onSaveSuccess }) {
         loadFile();
     }, [file.path, file.name, mode]);  // eslint-disable-line react-hooks/exhaustive-deps
 
-    const handleEditorMount = useCallback(() => {
-        // Monaco is mounted — no-op, loading is dismissed by progress animation
+    const handleEditorMount = useCallback((editor, monaco) => {
+        monacoRef.current = monaco;
+        // Pin the model to the file's original EOL — otherwise Monaco's
+        // platform default (CRLF on Windows) silently rewrites every line
+        // ending on the next edit or save.
+        editor.getModel()?.setEOL(
+            eolRef.current === "\r\n" ? monaco.editor.EndOfLineSequence.CRLF
+                                      : monaco.editor.EndOfLineSequence.LF
+        );
     }, []);
 
     const handleSave = async (useSudo = false) => {
         setSaving(true);
         setError(null);
         try {
-            const bytes = new TextEncoder().encode(content);
+            // Normalize regardless of what the model did — belt and braces
+            // against any path that still mixes line endings.
+            const normalized = content.replace(/\r\n|\r|\n/g, eolRef.current);
+            const bytes = new TextEncoder().encode(normalized);
             let command = mode === 'sftp' ? "sftp_write" : "local_write_file";
 
             if (useSudo && mode === 'sftp') {
@@ -174,7 +205,7 @@ export default function FileEditor({ file, mode, onClose, onSaveSuccess }) {
                     <div className="header-actions">
                         <button
                             className="save-btn"
-                            onClick={handleSave}
+                            onClick={() => handleSave(false)}
                             disabled={loading || saving}
                         >
                             <Save size={16} className={saving ? "save-spin" : ""} />
@@ -212,24 +243,27 @@ export default function FileEditor({ file, mode, onClose, onSaveSuccess }) {
                             <button onClick={onClose}>Close</button>
                         </div>
                     )}
-                    <div style={{ height: '100%', visibility: loading || error ? 'hidden' : 'visible' }}>
-                        <Editor
-                            height="100%"
-                            theme="vs-dark"
-                            language={language}
-                            value={content}
-                            onMount={handleEditorMount}
-                            onChange={(value) => setContent(value || "")}
-                            loading={null}
-                            options={{
-                                fontSize: 14,
-                                minimap: { enabled: true },
-                                scrollBeyondLastLine: false,
-                                automaticLayout: true,
-                                padding: { top: 10, bottom: 10 }
-                            }}
-                        />
-                    </div>
+                    {!loading && !error && (
+                        <div style={{ height: '100%' }}>
+                            <Editor
+                                height="100%"
+                                theme="vs-dark"
+                                language={language}
+                                value={content}
+                                path={file.path}
+                                onMount={handleEditorMount}
+                                onChange={(value) => setContent(value || "")}
+                                loading={null}
+                                options={{
+                                    fontSize: 14,
+                                    minimap: { enabled: true },
+                                    scrollBeyondLastLine: false,
+                                    automaticLayout: true,
+                                    padding: { top: 10, bottom: 10 }
+                                }}
+                            />
+                        </div>
+                    )}
                 </div>
             </div>
         </div>

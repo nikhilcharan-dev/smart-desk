@@ -271,6 +271,292 @@
     color: #ef4444;
 }
 
+.transfer-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+}
+
+.transfer-error {
+    font-size: 10px;
+    color: #fca5a5;
+    margin-top: 4px;
+    word-break: break-word;
+}
+
+.transfer-retry-inline {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-top: 6px;
+    background: transparent;
+    border: 1px solid rgba(0, 255, 0, 0.4);
+    color: #00ff00;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    padding: 3px 8px;
+    border-radius: 0;
+    cursor: pointer;
+}
+
+.transfer-retry-inline:hover {
+    background: rgba(0, 255, 0, 0.1);
+}
+
+/* === Transfer Manager (expanded) === */
+.tm-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    backdrop-filter: blur(2px);
+    z-index: 10003;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 40px;
+    animation: tm-fade 0.15s ease;
+}
+
+@keyframes tm-fade {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+.tm-panel {
+    width: 100%;
+    max-width: 860px;
+    max-height: 100%;
+    background: #0b0e14;
+    border: 1px solid #1f2532;
+    border-radius: 12px;
+    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    font-family: var(--font-ui);
+}
+
+.tm-header {
+    padding: 18px 22px;
+    border-bottom: 1px solid #1f2532;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    flex-shrink: 0;
+}
+
+.tm-title-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    min-width: 0;
+}
+
+.tm-title {
+    font-size: 18px;
+    font-weight: 700;
+    color: #fff;
+    margin: 0;
+    white-space: nowrap;
+}
+
+.tm-stats {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.tm-stat {
+    font-size: 11px;
+    color: #9ca3af;
+    background: #11141b;
+    border: 1px solid #1f2532;
+    padding: 2px 8px;
+    border-radius: 10px;
+}
+
+.tm-stat-done { color: #34d399; }
+.tm-stat-error { color: #f87171; }
+
+.tm-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.tm-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: #11141b;
+    border: 1px solid #1f2532;
+    color: #d1d5db;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 0 12px;
+    height: 32px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.15s;
+    white-space: nowrap;
+}
+
+.tm-btn:hover:not(:disabled) {
+    background: #1c2230;
+    color: #fff;
+}
+
+.tm-btn:disabled {
+    opacity: 0.4;
+    cursor: default;
+}
+
+.tm-list {
+    overflow-y: auto;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.tm-empty {
+    text-align: center;
+    padding: 48px 24px;
+    color: #4b5563;
+    font-size: 14px;
+}
+
+.tm-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 12px 14px;
+    background: #11141b;
+    border: 1px solid #1f2532;
+    border-radius: 10px;
+}
+
+.tm-dir {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    background: #0b0e14;
+    border: 1px solid #1f2532;
+    color: #7c8aa5;
+    flex-shrink: 0;
+}
+
+.tm-main {
+    flex: 1;
+    min-width: 0;
+}
+
+.tm-name-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 5px;
+}
+
+.tm-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: #e5e7eb;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.tm-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 2px 8px;
+    border-radius: 6px;
+    background: #1f2937;
+    color: #9ca3af;
+    flex-shrink: 0;
+}
+
+.tm-badge-active { background: rgba(79, 156, 255, 0.12); color: #60a5fa; }
+.tm-badge-done { background: rgba(16, 185, 129, 0.12); color: #34d399; }
+.tm-badge-error { background: rgba(239, 68, 68, 0.12); color: #f87171; }
+
+.tm-path {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: #6b7280;
+    margin-bottom: 8px;
+}
+
+.tm-path-seg {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 46%;
+}
+
+.tm-arrow {
+    color: #4b5563;
+    flex-shrink: 0;
+}
+
+.tm-progress-track {
+    height: 4px;
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 2px;
+    overflow: hidden;
+}
+
+.tm-progress-fill {
+    height: 100%;
+    background: #4f9cff;
+    transition: width 0.3s ease;
+}
+
+.tm-progress-fill.finished { background: #10b981; }
+.tm-progress-fill.error { background: #ef4444; }
+
+.tm-details {
+    font-size: 11px;
+    color: #6b7280;
+    margin-top: 6px;
+}
+
+.tm-error {
+    font-size: 11px;
+    color: #fca5a5;
+    margin-top: 6px;
+    word-break: break-word;
+}
+
+.tm-row-actions {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    flex-shrink: 0;
+}
+
+.tm-del:hover:not(:disabled) {
+    color: #f87171;
+}
+
+.tm-del:disabled {
+    opacity: 0.3;
+    cursor: default;
+}
+
 .file-tree-container.drag-target {
     background: #1c2230;
     box-shadow: inset 0 0 0 2px #4f9cff;
@@ -335,6 +621,11 @@
 .icon-btn-small:hover {
     background: #1f2937;
     color: #fff;
+}
+
+.icon-btn-small.pinned {
+    color: #22c55e;
+    border-color: rgba(34, 197, 94, 0.35);
 }
 
 /* === Sort Header === */
@@ -426,6 +717,22 @@
     color: #eaeaea;
     font-size: 11px;
     outline: none;
+}
+
+.search-hint-chip {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    font-size: 9px;
+    color: #6b7280;
+    background: #11141b;
+    border: 1px solid #1f2532;
+    border-radius: 3px;
+    padding: 1px 5px;
+    margin-right: 4px;
+    white-space: nowrap;
+    flex-shrink: 0;
+    pointer-events: none;
 }
 
 .search-clear-btn {
@@ -536,6 +843,22 @@
     pointer-events: none;
     min-width: 70px;
     text-align: right;
+}
+
+.file-path-hint {
+    flex: 1;
+    min-width: 0;
+    font-size: 11px;
+    color: #6b7280;
+    margin-left: 8px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    pointer-events: none;
+}
+
+.search-status-hint {
+    color: #4f9cff;
 }
 
 .loading-indicator,

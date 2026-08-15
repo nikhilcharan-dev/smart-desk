@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { MAIN_SESSION_ID } from '../../utils/terminal';
-import { Code2, Plus, Play, Trash2, Edit3, Save, X, Copy, Check, FolderOpen, Tag } from 'lucide-react';
+import { Code2, Plus, Play, Trash2, Edit3, Save, X, Copy, Check, FolderOpen, Tag, Shield } from 'lucide-react';
 import './Snippets.css';
 
 const DEFAULT_CATEGORIES = ['General', 'Monitoring', 'Deployment', 'Database', 'Network', 'Security'];
@@ -70,6 +70,10 @@ export default function Snippets() {
     const [running, setRunning] = useState(false);
     const [copied, setCopied] = useState(false);
     const [activeCategory, setActiveCategory] = useState('All');
+    // When on, snippets run through the always-elevate backend command, using
+    // the profile's stored sudo password (or passwordless sudo). Lets root-only
+    // snippets (auth log, iptables, lsof, sudoers) return full output.
+    const [useSudo, setUseSudo] = useState(false);
 
     // Form state for create/edit
     const [form, setForm] = useState({ name: '', command: '', description: '', category: 'General' });
@@ -107,13 +111,19 @@ export default function Snippets() {
         setOutput(null);
         setRunning(true);
         try {
-            const result = await invoke('exec_ssh_command', {
+            const result = await invoke(useSudo ? 'exec_ssh_command_sudo' : 'exec_ssh_command', {
                 sessionId: MAIN_SESSION_ID,
                 command: snippet.command
             });
             setOutput(result);
         } catch (err) {
-            setOutput('Error: ' + err);
+            const raw = String(err);
+            const msg = raw.includes('SUDO_PASSWORD_REQUIRED')
+                ? 'Sudo needs a password. Add one to this profile (Authentication → Sudo password) and reconnect, or disable "Run with sudo".'
+                : raw.includes('SUDO_PASSWORD_INCORRECT')
+                    ? 'The stored sudo password was rejected. Update it in the profile settings.'
+                    : 'Error: ' + raw;
+            setOutput(msg);
         } finally {
             setRunning(false);
         }
@@ -247,8 +257,19 @@ export default function Snippets() {
                                 {activeSnippet.description && <p className="sn-detail-desc">{activeSnippet.description}</p>}
                             </div>
                             <div className="sn-detail-actions">
+                                <label
+                                    className={`sn-sudo-toggle ${useSudo ? 'active' : ''}`}
+                                    title="Run through sudo, using this profile's stored sudo password (or passwordless sudo). Needed for root-only output."
+                                >
+                                    <input
+                                        type="checkbox"
+                                        checked={useSudo}
+                                        onChange={e => setUseSudo(e.target.checked)}
+                                    />
+                                    <Shield size={13} /> sudo
+                                </label>
                                 <button className="sn-btn primary" onClick={() => runSnippet(activeSnippet)} disabled={running}>
-                                    <Play size={14} /> {running ? 'Running...' : 'Run'}
+                                    <Play size={14} /> {running ? 'Running...' : useSudo ? 'Run as sudo' : 'Run'}
                                 </button>
                             </div>
                         </div>

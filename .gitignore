@@ -4,6 +4,9 @@
 .agent
 .claude
 
+# Graphify
+graphify-out/
+
 # Dependencies
 node_modules/
 my-tauri-app/node_modules/

@@ -2,12 +2,13 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { MAIN_SESSION_ID } from "../../utils/terminal";
-import { Folder, File, ArrowUp, RefreshCw, Plus, Monitor, Search, X, ChevronRight, Shield } from "lucide-react";
+import { Folder, File, ArrowUp, RefreshCw, Plus, Monitor, Search, X, ChevronRight, Shield, CornerDownLeft, Pin, Check } from "lucide-react";
 import "./FileExplorer.css";
 import FileContextMenu from "./FileContextMenu";
 import PermissionModal from "./PermissionModal";
 import Modal from "../Common/Modal";
 import { dragController } from "./ManualDragController";
+import { useTransfers } from "./TransferContext";
 
 const formatSize = (bytes) => {
     if (!bytes || bytes === 0) return "--";
@@ -48,7 +49,8 @@ const parseBreadcrumbs = (path, mode) => {
 };
 
 // mode: 'sftp' | 'local'
-export default function GenericFileTree({ mode = 'sftp', initialPath = "/", onDropFile, onOpenFile, refreshTrigger }) {
+export default function GenericFileTree({ mode = 'sftp', initialPath = "/", profileId = null, onDropFile, onOpenFile, refreshTrigger }) {
+    const { startTransfer } = useTransfers();
     const listRef = useRef(null);
     const [currentPath, setCurrentPath] = useState(initialPath);
     const [inputPath, setInputPath] = useState(initialPath);
@@ -57,7 +59,12 @@ export default function GenericFileTree({ mode = 'sftp', initialPath = "/", onDr
     const [error, setError] = useState(null);
     const [contextMenu, setContextMenu] = useState(null);
     const [viewMode, setViewMode] = useState('list');
+    const [pathPinned, setPathPinned] = useState(false); // brief "saved" confirmation on the pin button
     const [searchQuery, setSearchQuery] = useState("");
+    const [searchResults, setSearchResults] = useState(null); // non-null = showing recursive search results
+    const [searching, setSearching] = useState(false);
+    const [searchCapped, setSearchCapped] = useState(false);
+    const searchReqId = useRef(0);
     const [selectedFile, setSelectedFile] = useState(null);
     const [permissionFile, setPermissionFile] = useState(null);
 
@@ -99,6 +106,56 @@ export default function GenericFileTree({ mode = 'sftp', initialPath = "/", onDr
             setLoading(false);
         }
     }, [mode]);
+
+    // Remember currentPath as this profile's default starting path for this side
+    // (local/remote), so the explorer reopens here next time instead of the hardcoded default.
+    const pinTimeoutRef = useRef(null);
+    const handleSetDefaultPath = useCallback(async () => {
+        if (!profileId || currentPath === "DRIVES") return;
+        try {
+            await invoke("set_profile_default_path", { id: profileId, mode, path: currentPath });
+            setPathPinned(true);
+            clearTimeout(pinTimeoutRef.current);
+            pinTimeoutRef.current = setTimeout(() => setPathPinned(false), 1500);
+        } catch (err) {
+            console.error("Failed to save default path:", err);
+        }
+    }, [profileId, mode, currentPath]);
+
+    useEffect(() => () => clearTimeout(pinTimeoutRef.current), []);
+
+    const clearSearch = useCallback(() => {
+        searchReqId.current++; // invalidate any in-flight search
+        setSearchQuery("");
+        setSearchResults(null);
+        setSearchCapped(false);
+        setSearching(false);
+    }, []);
+
+    // Recursive server-side search (SFTP only) — runs a single remote find/Get-ChildItem
+    // command instead of walking the tree via repeated directory listings.
+    const handleRecursiveSearch = useCallback(async () => {
+        if (mode !== 'sftp' || !searchQuery.trim()) return;
+        const reqId = ++searchReqId.current;
+        setSearching(true);
+        setSearchCapped(false);
+        try {
+            const results = await invoke("sftp_search", {
+                sessionId: MAIN_SESSION_ID,
+                path: currentPath,
+                query: searchQuery.trim(),
+            });
+            if (reqId !== searchReqId.current) return; // stale response
+            setSearchResults(results);
+            setSearchCapped(results.length >= 500);
+        } catch (err) {
+            if (reqId !== searchReqId.current) return;
+            console.error("Search failed:", err);
+            setSearchResults([]);
+        } finally {
+            if (reqId === searchReqId.current) setSearching(false);
+        }
+    }, [mode, currentPath, searchQuery]);
 
     const showAlert = useCallback((title, message) => {
         setModal({
@@ -294,13 +351,23 @@ export default function GenericFileTree({ mode = 'sftp', initialPath = "/", onDr
         }
     }, [currentPath, mode]);
 
+    // Parent directory of an item, derived from its own path rather than the browsed
+    // currentPath — needed because search results can be nested several folders deep.
+    const getParentDir = useCallback((filePath) => {
+        if (mode !== 'sftp') return currentPath;
+        const idx = filePath.lastIndexOf('/');
+        if (idx <= 0) return '/';
+        return filePath.slice(0, idx);
+    }, [mode, currentPath]);
+
     const handleRename = useCallback((file) => {
         setContextMenu(null);
         showPrompt("Rename Item", file.name, async (newName) => {
             if (!newName || newName === file.name) return;
 
-            const sep = (mode === 'local' && (currentPath.includes('\\') || currentPath === 'DRIVES')) ? '\\' : '/';
-            const newPath = currentPath.endsWith(sep) ? currentPath + newName : currentPath + sep + newName;
+            const parentDir = getParentDir(file.path);
+            const sep = (mode === 'local' && (parentDir.includes('\\') || parentDir === 'DRIVES')) ? '\\' : '/';
+            const newPath = parentDir.endsWith(sep) ? parentDir + newName : parentDir + sep + newName;
 
             const checkArgs = mode === 'sftp' ? { sessionId: MAIN_SESSION_ID, mode, path: newPath } : { mode, path: newPath };
             const exists = await invoke("check_path_exists", checkArgs);
@@ -320,7 +387,7 @@ export default function GenericFileTree({ mode = 'sftp', initialPath = "/", onDr
                 showAlert("Error", "Rename failed: " + err);
             }
         });
-    }, [mode, currentPath, loadFiles, showPrompt, showAlert]);
+    }, [mode, currentPath, loadFiles, showPrompt, showAlert, getParentDir]);
 
     const handleDelete = useCallback((file) => {
         setContextMenu(null);
@@ -367,7 +434,8 @@ export default function GenericFileTree({ mode = 'sftp', initialPath = "/", onDr
         loadFiles(currentPath);
         setInputPath(currentPath === "DRIVES" ? "Computer" : currentPath);
         setSelectedFile(null);
-    }, [currentPath, refreshTrigger, loadFiles]);
+        clearSearch();
+    }, [currentPath, refreshTrigger, loadFiles, clearSearch]);
 
     // Listen for manual-drop on document (dispatched by ManualDragController)
     useEffect(() => {
@@ -468,8 +536,9 @@ export default function GenericFileTree({ mode = 'sftp', initialPath = "/", onDr
     const handleZip = async (file) => {
         setContextMenu(null);
         const zipName = file.name + ".zip";
-        const sep = (mode === 'local' && (currentPath.includes('\\') || currentPath === 'DRIVES')) ? '\\' : '/';
-        const dest = currentPath.endsWith(sep) ? currentPath + zipName : currentPath + sep + zipName;
+        const parentDir = getParentDir(file.path);
+        const sep = (mode === 'local' && (parentDir.includes('\\') || parentDir === 'DRIVES')) ? '\\' : '/';
+        const dest = parentDir.endsWith(sep) ? parentDir + zipName : parentDir + sep + zipName;
 
         try {
             const command = mode === 'sftp' ? "sftp_zip" : "local_zip";
@@ -486,11 +555,12 @@ export default function GenericFileTree({ mode = 'sftp', initialPath = "/", onDr
 
     const handleUnzip = async (file) => {
         setContextMenu(null);
+        const parentDir = getParentDir(file.path);
         try {
             const command = mode === 'sftp' ? "sftp_unzip" : "local_unzip";
             const args = mode === 'sftp'
-                ? { sessionId: MAIN_SESSION_ID, src: file.path, dest: currentPath }
-                : { src: file.path, dest: currentPath };
+                ? { sessionId: MAIN_SESSION_ID, src: file.path, dest: parentDir }
+                : { src: file.path, dest: parentDir };
             await invoke(command, args);
             showAlert("Success", "Extraction started/finished.");
             loadFiles(currentPath);
@@ -512,12 +582,13 @@ export default function GenericFileTree({ mode = 'sftp', initialPath = "/", onDr
                 const sep = '\\';
                 const localFile = selectedDir.endsWith(sep) ? selectedDir + file.name : selectedDir + sep + file.name;
 
-                await invoke("sftp_download", {
-                    sessionId: MAIN_SESSION_ID,
-                    remotePath: file.path,
-                    localPath: localFile
+                await startTransfer({
+                    kind: 'download',
+                    name: file.name,
+                    isDir: file.isDir || false,
+                    src: file.path,
+                    dest: localFile,
                 });
-                showAlert("Success", `${file.name} downloaded successfully!`);
             }
         } catch (err) {
             showAlert("Error", "Download failed: " + err);
@@ -549,7 +620,11 @@ export default function GenericFileTree({ mode = 'sftp', initialPath = "/", onDr
     };
 
     const getSortedFiles = useCallback(() => {
-        const filtered = files.filter(f => f.name.toLowerCase().includes(searchQuery.toLowerCase()));
+        // Recursive search results are already filtered server-side; otherwise
+        // filter the current directory listing client-side as the user types.
+        const filtered = searchResults !== null
+            ? searchResults
+            : files.filter(f => f.name.toLowerCase().includes(searchQuery.toLowerCase()));
 
         // Separate dirs and files, sort each group
         const dirs = filtered.filter(f => f.is_dir);
@@ -570,7 +645,7 @@ export default function GenericFileTree({ mode = 'sftp', initialPath = "/", onDr
 
         // Always show folders first
         return [...dirs, ...regularFiles];
-    }, [files, sortConfig, searchQuery]);
+    }, [files, searchResults, sortConfig, searchQuery]);
 
     const getSortIndicator = (key) => {
         if (sortConfig.key !== key) return null;
@@ -629,6 +704,15 @@ export default function GenericFileTree({ mode = 'sftp', initialPath = "/", onDr
                     <button onClick={() => loadFiles(currentPath)} title="Refresh" className="icon-btn-small">
                         <RefreshCw size={16} />
                     </button>
+                    {profileId && currentPath !== "DRIVES" && (
+                        <button
+                            onClick={handleSetDefaultPath}
+                            title={pathPinned ? "Saved as default" : `Open here by default for this profile`}
+                            className={`icon-btn-small ${pathPinned ? 'pinned' : ''}`}
+                        >
+                            {pathPinned ? <Check size={16} /> : <Pin size={16} />}
+                        </button>
+                    )}
                 </div>
             </div>
 
@@ -651,6 +735,7 @@ export default function GenericFileTree({ mode = 'sftp', initialPath = "/", onDr
                 data-current-path={currentPath}
             >
                 {loading && <div className="loading-indicator">Loading...</div>}
+                {searching && <div className="loading-indicator">Searching {currentPath} recursively...</div>}
                 {error && <div className="error-message">{error}</div>}
 
                 {sortedFiles.map((file) => (
@@ -672,7 +757,10 @@ export default function GenericFileTree({ mode = 'sftp', initialPath = "/", onDr
                                 <File size={viewMode === 'grid' ? 32 : 18} className="text-gray-400" />
                             )}
                         </div>
-                        <div className="file-name" title={file.name}>{file.name}</div>
+                        <div className="file-name" title={file.path}>{file.name}</div>
+                        {viewMode === 'list' && searchResults !== null && (
+                            <div className="file-path-hint" title={file.path}>{file.path}</div>
+                        )}
                         {viewMode === 'list' && (
                             <div className="file-size">
                                 {file.is_dir ? '--' : formatSize(file.size)}
@@ -690,12 +778,28 @@ export default function GenericFileTree({ mode = 'sftp', initialPath = "/", onDr
                         className="search-input"
                         placeholder="Search files..."
                         value={searchQuery}
-                        onChange={(e) => setSearchQuery(e.target.value)}
+                        onChange={(e) => {
+                            setSearchQuery(e.target.value);
+                            if (searchResults !== null) setSearchResults(null); // typing after a search resumes local filtering
+                        }}
+                        onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                                e.preventDefault();
+                                handleRecursiveSearch();
+                            } else if (e.key === 'Escape') {
+                                clearSearch();
+                            }
+                        }}
                     />
+                    {mode === 'sftp' && searchQuery && searchResults === null && !searching && (
+                        <span className="search-hint-chip" title="Press Enter to search all subfolders">
+                            <CornerDownLeft size={9} /> all folders
+                        </span>
+                    )}
                     {searchQuery && (
                         <button
                             className="search-clear-btn"
-                            onClick={() => setSearchQuery("")}
+                            onClick={clearSearch}
                         >
                             <X size={14} />
                         </button>
@@ -706,10 +810,16 @@ export default function GenericFileTree({ mode = 'sftp', initialPath = "/", onDr
                         <span className="selected-info">
                             {selectedFile.name} {selectedFile.is_dir ? '' : `· ${formatSize(selectedFile.size)}`}
                         </span>
+                    ) : searching ? (
+                        "Searching..."
+                    ) : searchResults !== null ? (
+                        <span className="search-status-hint">
+                            {sortedFiles.length}{searchCapped ? '+' : ''} result{sortedFiles.length === 1 ? '' : 's'} (recursive)
+                        </span>
+                    ) : searchQuery ? (
+                        `${sortedFiles.length} matches`
                     ) : (
-                        searchQuery ?
-                            `${sortedFiles.length} matches` :
-                            `${files.length} items`
+                        `${files.length} items`
                     )}
                 </div>
             </div>

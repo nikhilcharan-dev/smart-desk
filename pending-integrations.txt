@@ -1,0 +1,17 @@
+# Pending OS Integrations for Servera
+
+The following VM OS types are currently not explicitly supported by Servera, which currently targets Linux, macOS (Darwin), and Windows:
+
+- FreeBSD
+- OpenBSD
+- NetBSD
+- Solaris / Illumos
+- ChromeOS
+- Android x86
+- Haiku
+- ReactOS
+- openSUSE (missing zypper package manager support)
+- Alpine Linux (missing apk package manager support)
+
+# Architecture Upgrades
+- Migrate from `ssh2` to `russh` (async SSH/SFTP for pipeline support and faster large file transfers)

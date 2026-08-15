@@ -233,7 +233,7 @@ export const Hero = () => {
           <div style={{ marginBottom: "1.75rem" }}>
             <span className="badge badge-v" style={{ fontSize: "0.72rem" }}>
               <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--violet-2)", display: "inline-block" }} />
-              v0.3.0 now featuring full parity for Windows, macOS & Linux
+              v2.0.0 now featuring full parity for Windows, macOS & Linux
               <ChevronRight size={12} style={{ marginLeft: 2, opacity: 0.7 }} />
             </span>
           </div>
@@ -668,7 +668,7 @@ export const OpsPilotSection = () => {
             <div style={{ background: "var(--violet)", borderRadius: "50%", width: 22, height: 22, display: "flex", alignItems: "center", justifyContent: "center" }}>
               <Zap size={12} color="white" />
             </div>
-            <span style={{ fontSize: "0.75rem", fontWeight: 700, color: "var(--violet-2)", letterSpacing: "0.05em" }}>New in v0.3.0</span>
+            <span style={{ fontSize: "0.75rem", fontWeight: 700, color: "var(--violet-2)", letterSpacing: "0.05em" }}>New in v2.0.0</span>
           </div>
           <h2 style={{ fontSize: "clamp(2.4rem, 4.5vw, 4.2rem)", marginBottom: "1.25rem" }}>
             Meet <span className="gradient-text">OpsPilot</span> —<br />
@@ -1035,7 +1035,7 @@ export const DownloadCTA = () => {
           <div style={{ position: "relative", zIndex: 1 }}>
             <div className="badge badge-g" style={{ marginBottom: "1.5rem" }}>
               <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--emerald)", display: "inline-block" }} />
-              v0.3.0 Stable
+              v2.0.0 Stable
             </div>
 
             <h2 style={{ fontSize: "clamp(2.5rem, 5vw, 4.5rem)", marginBottom: "1.25rem", letterSpacing: "-0.045em" }}>

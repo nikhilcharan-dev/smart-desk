@@ -184,7 +184,7 @@ export default function LogViewer({ profileId, ip, user, port, password, private
     // Stop any active stream
     const stopStream = useCallback(async () => {
         if (streamIdRef.current) {
-            try { await invoke('stop_log_stream', { streamId: streamIdRef.current }); } catch {}
+            try { await invoke('stop_log_stream', { streamId: streamIdRef.current }); } catch { /* best-effort teardown — stream is being discarded anyway */ }
             streamIdRef.current = null;
         }
         if (streamUnlistenRef.current) {
@@ -230,12 +230,15 @@ export default function LogViewer({ profileId, ip, user, port, password, private
                 password: password || null,
                 privateKey: privateKey || null,
                 proxyJump: proxyJump || null,
+                // For a saved profile, credentials are resolved server-side
+                // from the keyring — the password never lives in the UI.
+                profileId: profileId || null,
             });
         } catch (err) {
             setLines(prev => [...prev, `Stream error: ${err}`]);
             setStreaming(false);
         }
-    }, [ip, user, port, password, privateKey, proxyJump, stopStream]);
+    }, [ip, user, port, password, privateKey, proxyJump, profileId, stopStream]);
 
     // Cleanup stream on unmount or path change
     useEffect(() => {
@@ -245,12 +248,13 @@ export default function LogViewer({ profileId, ip, user, port, password, private
     const fetchLog = useCallback(async (path, count) => {
         setLoading(true);
         try {
-            let command;
-            if (path === '__journalctl__') {
-                command = `journalctl -n ${count} --no-pager 2>/dev/null || echo "journalctl not available"`;
-            } else {
-                command = `tail -n ${count} ${path} 2>/dev/null || echo "Cannot read ${path}"`;
-            }
+            // No `2>/dev/null || echo` masking here: a real failure (permission
+            // denied on a root-only log) must reach the backend so its sudo
+            // auto-fallback can re-run the read elevated. Masking it to exit 0
+            // would make the backend think the read succeeded.
+            const command = path === '__journalctl__'
+                ? `journalctl -n ${count} --no-pager`
+                : `tail -n ${count} ${path}`;
             const output = await invoke('exec_ssh_command', {
                 sessionId: MAIN_SESSION_ID,
                 command
@@ -262,7 +266,15 @@ export default function LogViewer({ profileId, ip, user, port, password, private
                 setLines(newLines);
             }
         } catch (err) {
-            setLines([`Error: ${err}`]);
+            const raw = String(err);
+            // Backend sentinel: elevation was needed but no sudo credential is
+            // available. Point the user at where to add one.
+            const msg = raw.includes('SUDO_PASSWORD_REQUIRED')
+                ? `Permission denied reading ${path}. Add a sudo password to this profile (Authentication → Sudo password) to read protected logs.`
+                : raw.includes('SUDO_PASSWORD_INCORRECT')
+                    ? `The stored sudo password was rejected. Update it in the profile's Authentication settings.`
+                    : `Error: ${raw}`;
+            setLines([msg]);
         } finally {
             setLoading(false);
         }

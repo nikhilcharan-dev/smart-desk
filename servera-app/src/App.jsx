@@ -27,11 +27,19 @@ import UFWManager from "./components/UFWManager/UFWManager";
 import PackageManager from "./components/PackageManager/PackageManager";
 import PermissionModal from "./components/FileExplorer/PermissionModal";
 import MfaModal from "./components/Common/MfaModal";
+import HostKeyModal from "./components/Common/HostKeyModal";
 import TunnelManager from "./components/TunnelManager/TunnelManager";
 import FleetRunner from "./components/FleetRunner/FleetRunner";
 import PlaybookRunner from "./components/PlaybookRunner/PlaybookRunner";
+import CloudBrowser from "./components/CloudBrowser/CloudBrowser";
+import TopBar from "./components/TopBar/TopBar";
+import Modal from "./components/Common/Modal";
 import { DEFAULT_SIDEBAR_ITEMS } from "./constants";
 import StartupAnimation from "./components/StartupAnimation/StartupAnimation";
+
+// Matches "localhost:PORT" / "127.0.0.1:PORT" printed by dev servers in
+// terminal output, so they can be forwarded and opened in Cloud Browser.
+const LOCAL_LINK_RE = /\b(?:localhost|127\.0\.0\.1):(\d{2,5})\b/g;
 
 /* ─────────────────────────────────────
    TERMINAL THEMES
@@ -117,6 +125,12 @@ export default function App() {
     const [user, setUser] = useState("");
     const [profileName, setProfileName] = useState("");
     const [connectedProfileId, setConnectedProfileId] = useState(null);
+    // Held only for the lifetime of the session so TunnelManager can open
+    // new tunnels with the same credentials used to connect.
+    const [connPort, setConnPort] = useState(22);
+    const [connPassword, setConnPassword] = useState("");
+    const [connPrivateKey, setConnPrivateKey] = useState("");
+    const [connProxyJump, setConnProxyJump] = useState("");
     const [isReconnecting, setIsReconnecting] = useState(false);
     // eslint-disable-next-line no-unused-vars
     const [hostFingerprint, setHostFingerprint] = useState("");
@@ -172,7 +186,18 @@ export default function App() {
     const [isTerminalOpen, setTerminalOpen] = useState(false);
     const [smartLayout] = useState("side-by-side");
     const [splitRatio, setSplitRatio] = useState(50); // terminal takes this % of space
-    const [showOpsPilot, setShowOpsPilot] = useState(true); // whether OpsPilot panel is visible
+    const [showOpsPilot, setShowOpsPilot] = useState(false); // whether OpsPilot panel is visible
+
+    // Cloud Browser — the currently-shown forwarded URL, plus terminal
+    // link-click auto-tunneling state.
+    const [cloudBrowserUrl, setCloudBrowserUrl] = useState(null);
+    const [portConfirm, setPortConfirm] = useState(null); // { port } | null
+    const confirmedPortsRef = useRef(new Set());
+    // Always-fresh snapshot of connection params, read by the terminal link
+    // handler so its closure (captured once when the xterm instance is
+    // created) never sees stale credentials.
+    const connParamsRef = useRef({});
+    connParamsRef.current = { ip, user, connPort, connPassword, connPrivateKey, connProxyJump, connectedProfileId };
 
     // Sidebar tooltip (fixed-position, immune to overflow clipping)
     const [sidebarTip, setSidebarTip] = useState(null); // { text, top, left }
@@ -244,6 +269,7 @@ export default function App() {
             }
             // Ctrl+V / Ctrl+Shift+V → paste from clipboard into terminal
             if (e.key === 'v' || e.key === 'V') {
+                e.preventDefault();
                 navigator.clipboard.readText().then(text => {
                     if (text) invoke("send_ssh_input", { sessionId: MAIN_SESSION_ID, input: text });
                 }).catch(() => {});
@@ -253,6 +279,32 @@ export default function App() {
         });
 
         xtermRef.current = term;
+
+        // Detect "localhost:PORT" / "127.0.0.1:PORT" in terminal output and
+        // make it clickable — activating it auto-forwards the port and opens
+        // it in Cloud Browser (see handleLocalLinkClick).
+        term.registerLinkProvider({
+            provideLinks(bufferLineNumber, callback) {
+                const line = term.buffer.active.getLine(bufferLineNumber - 1);
+                if (!line) { callback(undefined); return; }
+                const text = line.translateToString(true);
+                const links = [];
+                LOCAL_LINK_RE.lastIndex = 0;
+                let match;
+                while ((match = LOCAL_LINK_RE.exec(text)) !== null) {
+                    const port = parseInt(match[1], 10);
+                    links.push({
+                        range: {
+                            start: { x: match.index + 1, y: bufferLineNumber },
+                            end: { x: match.index + match[0].length + 1, y: bufferLineNumber },
+                        },
+                        text: match[0],
+                        activate: () => handleLocalLinkClickRef.current(port),
+                    });
+                }
+                callback(links.length ? links : undefined);
+            },
+        });
 
         // Single SSH output listener — shared with SmartTerminal via xtermRef
         let unlisten;
@@ -277,6 +329,69 @@ export default function App() {
         }
     }, [termThemeId]);
 
+    const openInCloudBrowser = useCallback((url) => {
+        setCloudBrowserUrl(url);
+        setActiveView("cloudbrowser");
+    }, []);
+
+    // Ensures a local port-forward to 127.0.0.1:<port> on the connected VM
+    // exists (reusing one if already active), then opens it in Cloud Browser.
+    const forwardPortToCloudBrowser = useCallback(async (port) => {
+        const { ip, user, connPort, connPassword, connPrivateKey, connProxyJump, connectedProfileId } = connParamsRef.current;
+        try {
+            const active = await invoke("get_active_tunnels").catch(() => []);
+            const existing = (active || []).find(t =>
+                t.tunnel_type === "local" &&
+                t.remote_port === port &&
+                (t.remote_host === "127.0.0.1" || t.remote_host === "localhost")
+            );
+            if (existing) {
+                openInCloudBrowser(`http://localhost:${existing.local_port}`);
+                return;
+            }
+
+            const tryCreate = async (localPort) => invoke("create_tunnel", {
+                sessionId: MAIN_SESSION_ID,
+                tunnelId: `cloud-${port}-${Date.now()}`,
+                tunnelType: "local",
+                localPort,
+                remoteHost: "127.0.0.1",
+                remotePort: port,
+                ip, user,
+                port: connPort || 22,
+                password: connPassword || null,
+                privateKey: connPrivateKey || null,
+                proxyJump: connProxyJump || null,
+                profileId: connectedProfileId || null,
+            });
+
+            let info;
+            try {
+                info = await tryCreate(port);
+            } catch {
+                // Local port already taken by something else — retry once on a random free-ish port.
+                const fallbackPort = 20000 + Math.floor(Math.random() * 20000);
+                info = await tryCreate(fallbackPort);
+            }
+            openInCloudBrowser(`http://localhost:${info.local_port}`);
+        } catch (err) {
+            console.error("Failed to forward port to Cloud Browser:", err);
+        }
+    }, [openInCloudBrowser]);
+
+    // First click on a given remote port asks for confirmation; afterwards
+    // (for this session) it forwards straight through. Exposed via a ref so
+    // the terminal's link provider (registered once per xterm instance) always
+    // calls the latest version without needing to be in that effect's deps.
+    const handleLocalLinkClickRef = useRef(() => {});
+    handleLocalLinkClickRef.current = (port) => {
+        if (confirmedPortsRef.current.has(port)) {
+            forwardPortToCloudBrowser(port);
+        } else {
+            setPortConfirm({ port });
+        }
+    };
+
     const isSmartTerminalActive = activeView === "terminal" && showOpsPilot;
     // Terminal-only mode: terminal tab active but OpsPilot closed → xterm goes fullscreen
     const terminalOnlyMode = activeView === "terminal" && !showOpsPilot;
@@ -288,7 +403,7 @@ export default function App() {
                 fitAndResize(fitAddonRef.current, MAIN_SESSION_ID);
             }, 300);
         }
-    }, [isTerminalOpen, connected, activeView, smartLayout, splitRatio]);
+    }, [isTerminalOpen, connected, activeView, smartLayout, splitRatio, showOpsPilot]);
 
     // Draggable resizer between terminal and AI IDE
     const handleResizerMouseDown = useCallback((e) => {
@@ -346,10 +461,32 @@ export default function App() {
     }, [connectedProfileId]);
 
     const disconnect = async () => {
-        await invoke("close_ssh_session", { sessionId: MAIN_SESSION_ID });
+        // Tear down every backend session — the main terminal, TermHub panes,
+        // log streams and tunnels. Closing only the main session left readers
+        // and forwards attached to the old host, so its output kept arriving
+        // after connecting to a different server.
+        await invoke("disconnect_all").catch(() => {});
         setConnected(false);
         setLoginEntering(false);
+        // Connection identity
+        setConnectedProfileId(null);
+        setIp("");
+        setUser("");
+        setProfileName("");
+        setHostFingerprint("");
+        setConnPort(22);
+        setConnPassword("");
+        setConnPrivateKey("");
+        setConnProxyJump("");
+        // Per-connection UI state
+        setActiveView("dashboard");
+        setTerminalOpen(false);
+        setShowOpsPilot(false);
+        setCloudBrowserUrl(null);
+        setPortConfirm(null);
+        confirmedPortsRef.current = new Set();
         xtermRef.current?.dispose();
+        xtermRef.current = null;
     };
 
     if (!connected) {
@@ -369,6 +506,10 @@ export default function App() {
                     ipProp={ip}
                     setIsConnecting={setIsConnecting}
                     setProfileId={setConnectedProfileId}
+                    setConnPort={setConnPort}
+                    setConnPassword={setConnPassword}
+                    setConnPrivateKey={setConnPrivateKey}
+                    setConnProxyJump={setConnProxyJump}
                 />
                 {/* Startup sits on top (position:fixed z-index:9999), fades to reveal ConnectionHub */}
                 {showStartup && (
@@ -384,12 +525,18 @@ export default function App() {
                         <div className="loading-subtext">Establishing secure SSH handshake</div>
                     </div>
                 )}
+                {/* Prompts fire during the initial handshake, before `connected`
+                    flips — so they must be mounted on the login screen too. */}
+                <HostKeyModal />
+                <MfaModal />
             </>
         );
     }
 
     return (
         <div className="app-shell" onDragOver={(e) => e.preventDefault()}>
+            <TopBar ip={ip} user={user} profileName={profileName} />
+            <div className="app-shell-row">
             {/* Sidebar */}
             <div className="app-sidebar">
                 {DEFAULT_SIDEBAR_ITEMS.filter(item => sidebarItems.includes(item.id)).map(item => {
@@ -401,7 +548,6 @@ export default function App() {
                             onClick={() => {
                                 setActiveView(item.id);
                                 if (item.id === "terminal") {
-                                    setShowOpsPilot(true);
                                     if (!isTerminalOpen) setTerminalOpen(true);
                                 }
                             }}
@@ -459,7 +605,7 @@ export default function App() {
                     </div>
                     <div style={{ display: activeView === "files" ? "flex" : "none", flexDirection: "column", height: "100%", width: "100%" }}>
                         <ErrorBoundary>
-                            <FileExplorerLayout />
+                            <FileExplorerLayout profileId={connectedProfileId} />
                         </ErrorBoundary>
                     </div>
                     <div style={{ display: activeView === "terminal" ? "flex" : "none", flexDirection: "column", flex: "1 1 0", minHeight: 0, minWidth: 0 }}>
@@ -469,6 +615,24 @@ export default function App() {
                                 onClose={() => setShowOpsPilot(false)}
                                 layout={smartLayout}
                                 onLayoutChange={() => {}}
+                                ip={ip}
+                                user={user}
+                                port={connPort}
+                                password={connPassword}
+                                privateKey={connPrivateKey}
+                                proxyJump={connProxyJump}
+                                profileId={connectedProfileId}
+                                onOpenCloudBrowser={openInCloudBrowser}
+                            />
+                        </ErrorBoundary>
+                    </div>
+                    <div style={{ display: activeView === "cloudbrowser" ? "flex" : "none", flexDirection: "column", height: "100%", width: "100%" }}>
+                        <ErrorBoundary>
+                            <CloudBrowser
+                                active={activeView === "cloudbrowser"}
+                                url={cloudBrowserUrl}
+                                onClose={() => setCloudBrowserUrl(null)}
+                                onCreateTunnel={() => setActiveView("tunnels")}
                             />
                         </ErrorBoundary>
                     </div>
@@ -489,7 +653,7 @@ export default function App() {
                     </div>
                     <div style={{ display: activeView === "logs" ? "flex" : "none", flexDirection: "column", height: "100%", width: "100%" }}>
                         <ErrorBoundary>
-                            <LogViewer profileId={connectedProfileId} ip={ip} user={user} />
+                            <LogViewer profileId={connectedProfileId} ip={ip} user={user} port={connPort} password={connPassword} privateKey={connPrivateKey} proxyJump={connProxyJump} />
                         </ErrorBoundary>
                     </div>
                     <div style={{ display: activeView === "snippets" ? "flex" : "none", flexDirection: "column", height: "100%", width: "100%" }}>
@@ -504,7 +668,16 @@ export default function App() {
                     </div>
                     <div style={{ display: activeView === "tunnels" ? "flex" : "none", flexDirection: "column", height: "100%", width: "100%" }}>
                         <ErrorBoundary>
-                            <TunnelManager ip={ip} user={user} />
+                            <TunnelManager
+                                ip={ip}
+                                user={user}
+                                port={connPort}
+                                password={connPassword}
+                                privateKey={connPrivateKey}
+                                proxyJump={connProxyJump}
+                                profileId={connectedProfileId}
+                                onOpenCloudBrowser={openInCloudBrowser}
+                            />
                         </ErrorBoundary>
                     </div>
                     <div style={{ display: activeView === "fleet" ? "flex" : "none", flexDirection: "column", height: "100%", width: "100%" }}>
@@ -638,6 +811,7 @@ export default function App() {
                         style={{ display: (isTerminalOpen || isSmartTerminalActive) ? "block" : "none" }}></div>
                 </div>
             </div>
+            </div>
 
             <div className="drag-underlay" onDragOver={(e) => e.preventDefault()} />
 
@@ -650,7 +824,25 @@ export default function App() {
                 }}
             />
 
+            <HostKeyModal />
             <MfaModal />
+
+            <Modal
+                isOpen={!!portConfirm}
+                title="Forward to Cloud Browser?"
+                type="confirm"
+                confirmText="Open"
+                cancelText="Cancel"
+                onCancel={() => setPortConfirm(null)}
+                onConfirm={() => {
+                    const port = portConfirm.port;
+                    confirmedPortsRef.current.add(port);
+                    setPortConfirm(null);
+                    forwardPortToCloudBrowser(port);
+                }}
+            >
+                Forward <strong>localhost:{portConfirm?.port}</strong> through this SSH session and open it in Cloud Browser?
+            </Modal>
         </div>
     );
 }

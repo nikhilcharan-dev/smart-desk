@@ -1,13 +1,14 @@
 import {
     LayoutDashboard, FolderOpen, Terminal as TerminalIcon, Monitor,
     Cpu, Network, ScrollText, Code2, Box, Shield, PackageOpen, ShieldCheck,
-    ArrowRightLeft, Zap, BookOpen
+    ArrowRightLeft, Zap, BookOpen, Cloud
 } from "lucide-react";
 
 export const DEFAULT_SIDEBAR_ITEMS = [
     { id: 'dashboard', label: 'Analytics Hub', icon: LayoutDashboard },
     { id: 'files', label: 'File Explorer', icon: FolderOpen },
     { id: 'terminal', label: 'Smart Terminal', icon: TerminalIcon },
+    { id: 'cloudbrowser', label: 'Cloud Browser', icon: Cloud },
     { id: 'termhub', label: 'TermHub', icon: Monitor },
     { id: 'processes', label: 'Process Manager', icon: Cpu },
     { id: 'ports', label: 'Port Scanner', icon: Network },

@@ -1,9 +1,17 @@
 .app-shell {
   height: 100vh;
   display: flex;
+  flex-direction: column;
   background: #0b0e14;
   overflow: hidden;
   font-family: var(--font-ui);
+}
+
+.app-shell-row {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .drag-underlay {
@@ -370,7 +378,7 @@ body.dnd-active .drag-underlay {
    ======================================== */
 
 @media (max-width: 768px) {
-  .app-shell {
+  .app-shell-row {
     flex-direction: column-reverse;
     /* Sidebar moves to bottom */
   }

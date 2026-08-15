@@ -15,7 +15,7 @@ const CONNECT_TIMEOUT_SECS: u64 = 10;
 const READ_BUF_SIZE: usize = 8192;
 
 /// Chunk size for file transfers (64KB)
-const TRANSFER_CHUNK_SIZE: usize = 65536;
+const TRANSFER_CHUNK_SIZE: usize = 4194304; // 4MB chunks for faster SFTP transfer
 
 #[derive(Serialize, Deserialize, Clone, Debug, Copy, PartialEq)]
 pub enum RemoteOs {
@@ -30,6 +30,14 @@ pub struct FileNode {
     pub path: String,
     pub is_dir: bool,
     pub size: u64,
+}
+
+/// Full result of a one-shot remote command.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct CmdOutput {
+    pub stdout: String,
+    pub stderr: String,
+    pub code: i32,
 }
 
 impl RemoteOs {
@@ -70,6 +78,14 @@ impl Drop for SshConnection {
 /// Wraps the value in single quotes and escapes any embedded single quotes.
 fn shell_escape(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// Escape a string for a PowerShell single-quoted literal: `'` is doubled.
+/// The returned value INCLUDES the surrounding single quotes, so callers drop
+/// the literal quotes they previously wrapped the `{}` in. Without this, a
+/// filename containing `'` closes the quote and the rest executes.
+pub fn ps_escape(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "''"))
 }
 
 
@@ -266,10 +282,23 @@ fn establish_session(
         // We create a local listener, connect to it, and pipe data bidirectionally.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
         let addr = listener.local_addr().unwrap();
-        
+
         let client_sock = std::net::TcpStream::connect(addr).map_err(|e| e.to_string())?;
-        let (server_sock, _) = listener.accept().map_err(|e| e.to_string())?;
-        
+        let expected_peer = client_sock.local_addr().map_err(|e| e.to_string())?;
+
+        // Only accept OUR own connection. Any other local process that races to
+        // connect to this ephemeral port would otherwise be handed a plaintext
+        // pipe into the jump-host channel, so we keep accepting until the peer
+        // address matches the socket we just dialed out on.
+        let server_sock = loop {
+            let (sock, peer) = listener.accept().map_err(|e| e.to_string())?;
+            if peer == expected_peer {
+                break sock;
+            }
+            drop(sock);
+        };
+        drop(listener); // stop accepting once the bridge is established
+
         // Setup piping
         let mut chan_reader = channel;
         let mut chan_writer = chan_reader.clone();
@@ -297,6 +326,20 @@ fn establish_session(
     }
 
     sess.handshake().map_err(|e| format!("SSH handshake failed: {}", e))?;
+
+    // Verify the host key (TOFU) BEFORE sending any credentials. Skipped for
+    // loopback dials — those are the WireGuard gateway's dynamic 127.0.0.1
+    // forwards, whose far side is already authenticated by the WireGuard tunnel.
+    if !crate::known_hosts::is_loopback_host(ip) {
+        if let Some((key, key_type)) = sess.host_key() {
+            let fp = crate::known_hosts::fingerprint_hex(key);
+            let kt = crate::known_hosts::key_type_name(key_type);
+            crate::known_hosts::verify(app, session_id, ip, port, &fp, kt)?;
+        } else {
+            return Err("Server presented no host key — refusing to connect.".into());
+        }
+    }
+
     authenticate_session(sess, user, password, private_key, app, session_id)?;
     Ok(())
 }
@@ -304,14 +347,21 @@ fn establish_session(
 pub struct SshExecConn {
     pub session: Session,
     pub remote_os: RemoteOs,
+    /// True when the login user is already root (uid 0). Elevation is then a
+    /// no-op and every `exec_elevated`/sudo path runs the command directly.
+    pub is_root: bool,
+    /// Sudo password for this profile, resolved from the OS keyring at connect
+    /// time. `None` for ad-hoc sessions or profiles without one stored — the
+    /// elevation path then falls back to passwordless (`sudo -n`) only.
+    pub sudo_password: Option<String>,
 }
 
 impl SshExecConn {
     pub fn connect(
-        ip: &str, 
-        user: &str, 
+        ip: &str,
+        user: &str,
         port: u16,
-        password: Option<&str>, 
+        password: Option<&str>,
         private_key: Option<&str>,
         proxy_jump: Option<&str>,
         app: &AppHandle,
@@ -320,7 +370,8 @@ impl SshExecConn {
     ) -> Result<Self, String> {
         let mut sess = Session::new().map_err(|e| format!("Failed to create SSH session: {}", e))?;
         establish_session(&mut sess, ip, port, user, password, private_key, proxy_jump, app, session_id)?;
-        sess.set_blocking(true); 
+        sess.set_blocking(true);
+        sess.set_keepalive(true, 15);
 
         let remote_os = if let Some(os) = fixed_os {
             os
@@ -328,7 +379,32 @@ impl SshExecConn {
             Self::detect_os(&sess)
         };
 
-        Ok(Self { session: sess, remote_os })
+        let is_root = Self::detect_root(&sess, remote_os);
+
+        Ok(Self { session: sess, remote_os, is_root, sudo_password: None })
+    }
+
+    /// Store the sudo password after construction. Kept out of `connect`'s
+    /// signature so both the profile and ad-hoc connect paths stay unchanged.
+    pub fn set_sudo_password(&mut self, pw: Option<String>) {
+        self.sudo_password = pw;
+    }
+
+    /// Detect whether the login user is root. On Unix, `id -u` == 0. Windows has
+    /// no sudo model, so it is always treated as non-root (elevation is skipped
+    /// for Windows in the exec paths regardless).
+    fn detect_root(sess: &Session, remote_os: RemoteOs) -> bool {
+        if remote_os == RemoteOs::Windows {
+            return false;
+        }
+        if let Ok(mut ch) = sess.channel_session() {
+            if ch.exec("id -u").is_ok() {
+                let mut s = String::new();
+                let _ = ch.read_to_string(&mut s);
+                return s.trim() == "0";
+            }
+        }
+        false
     }
 
     fn detect_os(sess: &Session) -> RemoteOs {
@@ -356,18 +432,168 @@ impl SshExecConn {
         RemoteOs::Linux
     }
 
-    pub fn exec_command(&self, command: &str) -> Result<String, String> {
+    /// Run a command on its own channel, capturing stdout, stderr AND the exit
+    /// status. Returns Err only on a transport/channel failure — a non-zero
+    /// exit is reported in `code`, so the caller decides what it means.
+    pub fn exec_command_full(&self, command: &str) -> Result<CmdOutput, String> {
         let mut channel = self.session.channel_session().map_err(|e| e.to_string())?;
         channel.exec(command).map_err(|e| e.to_string())?;
-        let mut s = String::new();
-        channel.read_to_string(&mut s).map_err(|e| e.to_string())?;
+        let mut stdout = String::new();
+        channel.read_to_string(&mut stdout).map_err(|e| e.to_string())?;
+        let mut stderr = String::new();
+        channel.stderr().read_to_string(&mut stderr).ok();
         channel.wait_close().ok();
-        Ok(s)
+        let code = channel.exit_status().unwrap_or(-1);
+        Ok(CmdOutput { stdout, stderr, code })
+    }
+
+    /// Convenience wrapper preserving the historical lenient contract while no
+    /// longer swallowing failures. stdout is returned whenever present — many
+    /// tools (e.g. `systemctl is-active` on an inactive unit) exit non-zero yet
+    /// print useful output — but a failure that produced ONLY stderr now
+    /// surfaces as an error instead of the old silent empty success.
+    pub fn exec_command(&self, command: &str) -> Result<String, String> {
+        let r = self.exec_command_full(command)?;
+        if r.code == 0 || !r.stdout.trim().is_empty() {
+            Ok(r.stdout)
+        } else if !r.stderr.trim().is_empty() {
+            Err(r.stderr.trim().to_string())
+        } else {
+            Err(format!("Command failed (exit {})", r.code))
+        }
+    }
+
+    // ── Privilege escalation (sudo) ───────────────────────────────────────────
+    //
+    // Sentinel errors the frontend can branch on rather than showing raw text.
+    // `PASSWORD_REQUIRED` → prompt the user to add a sudo password to the
+    // profile; `PASSWORD_INCORRECT` → the stored password was rejected.
+    pub const SUDO_PASSWORD_REQUIRED: &'static str = "SUDO_PASSWORD_REQUIRED";
+    pub const SUDO_PASSWORD_INCORRECT: &'static str = "SUDO_PASSWORD_INCORRECT";
+
+    /// Heuristic: does this failed result look like it failed for lack of
+    /// privileges (rather than a genuine error)? Used to decide whether an
+    /// auto-fallback escalation is worth attempting.
+    fn looks_like_permission_failure(out: &CmdOutput) -> bool {
+        if out.code == 0 {
+            return false;
+        }
+        let hay = format!("{}\n{}", out.stdout, out.stderr).to_lowercase();
+        [
+            "permission denied",
+            "operation not permitted",
+            "must be root",
+            "are you root",
+            "you do not have permission",
+            "access denied",
+            "not permitted",
+            "eacces",
+            "eperm",
+        ]
+        .iter()
+        .any(|needle| hay.contains(needle))
+    }
+
+    /// Run `command` under sudo, feeding the stored password on stdin via
+    /// `sudo -S`. The channel is opened WITHOUT a PTY so the password we write
+    /// is not echoed back into the captured output. `-p ''` suppresses sudo's
+    /// own prompt text. The inner command is passed to `sh -c` so pipes and
+    /// redirection inside `command` still work under elevation.
+    fn exec_sudo_with_password(&self, command: &str, pw: &str) -> Result<CmdOutput, String> {
+        let wrapped = format!("sudo -S -p '' -- sh -c {}", shell_escape(command));
+        let mut channel = self.session.channel_session().map_err(|e| e.to_string())?;
+        channel.exec(&wrapped).map_err(|e| e.to_string())?;
+        // Send the password, then EOF so a command that also reads stdin does
+        // not block waiting for more input.
+        channel
+            .write_all(format!("{}\n", pw).as_bytes())
+            .map_err(|e| e.to_string())?;
+        channel.send_eof().ok();
+
+        let mut stdout = String::new();
+        channel.read_to_string(&mut stdout).map_err(|e| e.to_string())?;
+        let mut stderr = String::new();
+        channel.stderr().read_to_string(&mut stderr).ok();
+        channel.wait_close().ok();
+        let code = channel.exit_status().unwrap_or(-1);
+
+        let low = stderr.to_lowercase();
+        if code != 0 && (low.contains("try again") || low.contains("incorrect password") || low.contains("sorry")) {
+            return Err(Self::SUDO_PASSWORD_INCORRECT.to_string());
+        }
+        Ok(CmdOutput { stdout, stderr, code })
+    }
+
+    /// Run `command` with elevation, no plain attempt first. Order:
+    /// `sudo -n` (passwordless / NOPASSWD) → `sudo -S` with the stored password.
+    /// Returns `SUDO_PASSWORD_REQUIRED` when neither is available.
+    fn run_sudo(&self, command: &str) -> Result<CmdOutput, String> {
+        let noninteractive = format!("sudo -n -- sh -c {}", shell_escape(command));
+        let np = self.exec_command_full(&noninteractive)?;
+        // sudo -n prints "a password is required" to stderr and exits non-zero
+        // when NOPASSWD is not configured; only treat exit 0 as success.
+        if np.code == 0 {
+            return Ok(np);
+        }
+        if let Some(pw) = &self.sudo_password {
+            return self.exec_sudo_with_password(command, pw);
+        }
+        Err(Self::SUDO_PASSWORD_REQUIRED.to_string())
+    }
+
+    /// Auto-fallback execution: run `command` plain first, and only escalate
+    /// (via [`run_sudo`]) when it fails on what looks like a permission error.
+    /// A plain success — or a failure that is clearly not permission-related —
+    /// is returned as-is, so ordinary commands never trigger a sudo prompt.
+    pub fn exec_elevated(&self, command: &str) -> Result<CmdOutput, String> {
+        // Windows has no sudo; root needs none.
+        if self.remote_os == RemoteOs::Windows || self.is_root {
+            return self.exec_command_full(command);
+        }
+        let plain = self.exec_command_full(command)?;
+        if !Self::looks_like_permission_failure(&plain) {
+            return Ok(plain);
+        }
+        // Permission-shaped failure: try to escalate. If escalation is not
+        // possible (no password and no NOPASSWD), surface that sentinel so the
+        // UI can prompt — more useful than the raw "permission denied".
+        self.run_sudo(command)
+    }
+
+    /// Auto-fallback execution with a lenient string return matching
+    /// [`exec_command`]: runs plain, and only escalates on a permission-shaped
+    /// failure. This is the generic "just run it and elevate if needed" entry.
+    pub fn exec_command_auto(&self, command: &str) -> Result<String, String> {
+        let r = self.exec_elevated(command)?;
+        if r.code == 0 || !r.stdout.trim().is_empty() {
+            Ok(r.stdout)
+        } else if !r.stderr.trim().is_empty() {
+            Err(r.stderr.trim().to_string())
+        } else {
+            Err(format!("Command failed (exit {})", r.code))
+        }
+    }
+
+    /// Always-elevate variant for operations that are known to need root (the
+    /// explicit `*_sudo` file operations). Skips the plain attempt: `sudo -n`
+    /// then `sudo -S`. Lenient string return matching [`exec_command`].
+    pub fn exec_command_sudo(&self, command: &str) -> Result<String, String> {
+        if self.remote_os == RemoteOs::Windows || self.is_root {
+            return self.exec_command(command);
+        }
+        let r = self.run_sudo(command)?;
+        if r.code == 0 || !r.stdout.trim().is_empty() {
+            Ok(r.stdout)
+        } else if !r.stderr.trim().is_empty() {
+            Err(r.stderr.trim().to_string())
+        } else {
+            Err(format!("Command failed (exit {})", r.code))
+        }
     }
 
     pub fn exec_zip(&self, src: &str, dest: &str) -> Result<String, String> {
         let cmd = match self.remote_os {
-            RemoteOs::Windows => format!("powershell -NoProfile -Command \"Compress-Archive -Path '{}' -DestinationPath '{}' -Force\"", src, dest),
+            RemoteOs::Windows => format!("powershell -NoProfile -Command \"Compress-Archive -Path {} -DestinationPath {} -Force\"", ps_escape(src), ps_escape(dest)),
             _ => format!("zip -r {} {}", shell_escape(dest), shell_escape(src)),
         };
         self.exec_command(&cmd)
@@ -375,7 +601,7 @@ impl SshExecConn {
 
     pub fn exec_unzip(&self, src: &str, dest: &str) -> Result<String, String> {
         let cmd = match self.remote_os {
-            RemoteOs::Windows => format!("powershell -NoProfile -Command \"Expand-Archive -Path '{}' -DestinationPath '{}' -Force\"", src, dest),
+            RemoteOs::Windows => format!("powershell -NoProfile -Command \"Expand-Archive -Path {} -DestinationPath {} -Force\"", ps_escape(src), ps_escape(dest)),
             _ => format!("unzip {} -d {}", shell_escape(src), shell_escape(dest)),
         };
         self.exec_command(&cmd)
@@ -407,6 +633,47 @@ impl SshExecConn {
     pub fn sftp_list(&self, path: &str) -> Result<Vec<FileNode>, String> {
         let sftp = self.session.sftp().map_err(|e| e.to_string())?;
         Self::list_dir(&sftp, path)
+    }
+
+    /// Recursively search for files/folders under `path` whose name contains `query`
+    /// (case-insensitive). Runs a single remote `find`/`Get-ChildItem` command rather than
+    /// walking the tree via repeated SFTP `readdir` round-trips, and caps results at 500.
+    pub fn sftp_search(&self, path: &str, query: &str) -> Result<Vec<FileNode>, String> {
+        let pattern = format!("*{}*", query);
+        let cmd = match self.remote_os {
+            RemoteOs::Windows => format!(
+                "powershell -NoProfile -Command \"Get-ChildItem -LiteralPath '{}' -Recurse -Filter '{}' -ErrorAction SilentlyContinue -Force | Select-Object -First 500 | ForEach-Object {{ $t = if ($_.PSIsContainer) {{ 'D' }} else {{ 'F' }} ; $sz = if ($_.PSIsContainer) {{ 0 }} else {{ $_.Length }} ; Write-Output ($t + '|||' + $_.FullName + '|||' + $sz) }}\"",
+                path.replace('\'', "''"),
+                pattern.replace('\'', "''")
+            ),
+            _ => format!(
+                "find {} -iname {} 2>/dev/null | head -n 500 | while IFS= read -r f; do if [ -d \"$f\" ]; then printf 'D|||%s|||0\\n' \"$f\"; else sz=$(stat -c%s \"$f\" 2>/dev/null || stat -f%z \"$f\" 2>/dev/null || echo 0); printf 'F|||%s|||%s\\n' \"$f\" \"$sz\"; fi; done",
+                shell_escape(path),
+                shell_escape(&pattern)
+            ),
+        };
+
+        let output = self.exec_command(&cmd)?;
+        let mut nodes = Vec::new();
+        for line in output.lines() {
+            let mut parts = line.splitn(3, "|||");
+            let kind = parts.next().unwrap_or("");
+            let full_path = parts.next().unwrap_or("").trim();
+            let size_str = parts.next().unwrap_or("0");
+            if full_path.is_empty() { continue; }
+
+            let is_dir = kind == "D";
+            let size = size_str.trim().parse::<u64>().unwrap_or(0);
+            let name = full_path
+                .trim_end_matches(|c| c == '/' || c == '\\')
+                .rsplit(|c: char| c == '/' || c == '\\')
+                .next()
+                .unwrap_or(full_path)
+                .to_string();
+
+            nodes.push(FileNode { name, path: full_path.to_string(), is_dir, size });
+        }
+        Ok(nodes)
     }
 
     pub fn sftp_read(&self, path: &str) -> Result<Vec<u8>, String> {
@@ -442,7 +709,7 @@ impl SshExecConn {
                 let mut file = sftp.create(Path::new(&temp_path)).map_err(|e| e.to_string())?;
                 file.write_all(content).map_err(|e| e.to_string())?;
                 drop(file); drop(sftp);
-                let cmd = format!("powershell -NoProfile -Command \"Copy-Item -Path '{}' -Destination '{}' -Force; Remove-Item '{}'\"", temp_path, path, temp_path);
+                let cmd = format!("powershell -NoProfile -Command \"Copy-Item -Path {} -Destination {} -Force; Remove-Item {}\"", ps_escape(&temp_path), ps_escape(path), ps_escape(&temp_path));
                 self.exec_command(&cmd)?;
             }
             _ => {
@@ -450,8 +717,8 @@ impl SshExecConn {
                 let mut file = sftp.create(Path::new(&temp_path)).map_err(|e| e.to_string())?;
                 file.write_all(content).map_err(|e| e.to_string())?;
                 drop(file); drop(sftp);
-                let cmd = format!("sudo cp {} {}", shell_escape(&temp_path), shell_escape(path));
-                self.exec_command(&cmd)?;
+                let cmd = format!("cp {} {}", shell_escape(&temp_path), shell_escape(path));
+                self.exec_command_sudo(&cmd)?;
                 let _ = self.exec_command(&format!("rm {}", shell_escape(&temp_path)));
             }
         }
@@ -498,20 +765,24 @@ impl SshExecConn {
         let cmd = match self.remote_os {
             RemoteOs::Windows => {
                 if is_dir {
-                    format!("powershell -NoProfile -Command \"Remove-Item -Path '{}' -Recurse -Force\"", path)
+                    format!("powershell -NoProfile -Command \"Remove-Item -Path {} -Recurse -Force\"", ps_escape(path))
                 } else {
-                    format!("powershell -NoProfile -Command \"Remove-Item -Path '{}' -Force\"", path)
+                    format!("powershell -NoProfile -Command \"Remove-Item -Path {} -Force\"", ps_escape(path))
                 }
             }
             _ => {
                 if is_dir {
-                    format!("sudo rm -rf {}", shell_escape(path))
+                    format!("rm -rf {}", shell_escape(path))
                 } else {
-                    format!("sudo rm -f {}", shell_escape(path))
+                    format!("rm -f {}", shell_escape(path))
                 }
             }
         };
-        self.exec_command(&cmd).map(|_| ())
+        // Windows uses PowerShell (no sudo); Unix escalates through sudo.
+        match self.remote_os {
+            RemoteOs::Windows => self.exec_command(&cmd).map(|_| ()),
+            _ => self.exec_command_sudo(&cmd).map(|_| ()),
+        }
     }
 
     pub fn get_user_info(&self) -> Result<String, String> {
@@ -523,28 +794,40 @@ impl SshExecConn {
 
     pub fn sftp_get_permissions(&self, path: &str) -> Result<String, String> {
         match self.remote_os {
-            RemoteOs::Windows => self.exec_command(&format!("powershell -NoProfile -Command \"Get-Item '{}' | Select-Object Mode, LastWriteTime, Length, Name | Out-String\"", path)),
+            RemoteOs::Windows => self.exec_command(&format!("powershell -NoProfile -Command \"Get-Item {} | Select-Object Mode, LastWriteTime, Length, Name | Out-String\"", ps_escape(path))),
             _ => self.exec_command(&format!("ls -ld {}", shell_escape(path))),
         }
     }
 
     pub fn upgrade_access(&self, path: &str, action: &str) -> Result<String, String> {
-        let cmd = match self.remote_os {
-            RemoteOs::Windows => match action {
-                "exec" => format!("attrib -r '{}'", path),
-                "full" => format!("powershell -NoProfile -Command \"$acl = Get-Acl '{}'; $rule = New-Object System.Security.AccessControl.FileSystemAccessRule('Everyone','FullControl','Allow'); $acl.SetAccessRule($rule); Set-Acl '{}' $acl\"", path, path),
-                "own" => format!("powershell -NoProfile -Command \"takeown /f '{}' /r /d y\"", path),
-                _ => return Err("Invalid upgrade action for Windows".into()),
-            },
-            _ => match action {
-                "exec" => format!("chmod +x {}", shell_escape(path)),
-                "full" => format!("chmod 777 {}", shell_escape(path)),
-                "own" => format!("sudo chown $USER:$USER {}", shell_escape(path)),
-                "sudoer" => "sudo usermod -aG sudo $USER || sudo usermod -aG wheel $USER".to_string(),
-                _ => return Err("Invalid upgrade action".into()),
+        match self.remote_os {
+            RemoteOs::Windows => {
+                let cmd = match action {
+                    "exec" => format!("attrib -r '{}'", path),
+                    "full" => format!("powershell -NoProfile -Command \"$acl = Get-Acl {0}; $rule = New-Object System.Security.AccessControl.FileSystemAccessRule('Everyone','FullControl','Allow'); $acl.SetAccessRule($rule); Set-Acl {0} $acl\"", ps_escape(path)),
+                    "own" => format!("powershell -NoProfile -Command \"takeown /f {} /r /d y\"", ps_escape(path)),
+                    _ => return Err("Invalid upgrade action for Windows".into()),
+                };
+                self.exec_command(&cmd)
             }
-        };
-        self.exec_command(&cmd)
+            _ => {
+                // (inner command, needs elevation). `own`/`sudoer` change
+                // ownership / group membership, which require root; run them
+                // through the password-aware sudo path.
+                let (cmd, needs_sudo) = match action {
+                    "exec" => (format!("chmod +x {}", shell_escape(path)), false),
+                    "full" => (format!("chmod 777 {}", shell_escape(path)), false),
+                    "own" => (format!("chown $USER:$USER {}", shell_escape(path)), true),
+                    "sudoer" => ("usermod -aG sudo $USER || usermod -aG wheel $USER".to_string(), true),
+                    _ => return Err("Invalid upgrade action".into()),
+                };
+                if needs_sudo {
+                    self.exec_command_sudo(&cmd)
+                } else {
+                    self.exec_command(&cmd)
+                }
+            }
+        }
     }
 
     // ── Upload ────────────────────────────────────────────────────────────────
@@ -603,16 +886,21 @@ impl SshExecConn {
         // Move from temp to final destination with elevation
         let (mv_cmd, rm_cmd) = match self.remote_os {
             RemoteOs::Windows => (
-                format!("powershell -NoProfile -Command \"Move-Item -Path '{}' -Destination '{}' -Force\"", temp_remote, remote_path),
-                format!("powershell -NoProfile -Command \"Remove-Item -Path '{}' -Recurse -Force\"", temp_remote)
+                format!("powershell -NoProfile -Command \"Move-Item -Path {} -Destination {} -Force\"", ps_escape(&temp_remote), ps_escape(remote_path)),
+                format!("powershell -NoProfile -Command \"Remove-Item -Path {} -Recurse -Force\"", ps_escape(&temp_remote))
             ),
             _ => (
-                format!("sudo mv -f {} {}", shell_escape(&temp_remote), shell_escape(remote_path)),
+                // Inner command only — exec_command_sudo adds the elevation.
+                format!("mv -f {} {}", shell_escape(&temp_remote), shell_escape(remote_path)),
                 format!("rm -rf {}", shell_escape(&temp_remote))
             )
         };
 
-        if let Err(e) = self.exec_command(&mv_cmd) {
+        let mv_result = match self.remote_os {
+            RemoteOs::Windows => self.exec_command(&mv_cmd),
+            _ => self.exec_command_sudo(&mv_cmd),
+        };
+        if let Err(e) = mv_result {
             let _ = self.exec_command(&rm_cmd);
             let _ = app.emit("transfer-progress", serde_json::json!({
                 "root_name": name, "filename": name, "status": "error",
@@ -669,9 +957,13 @@ impl SshExecConn {
         remote_path: &str,
         root_name: &str,
     ) -> Result<(), String> {
-        // Create the root remote directory; surface errors (unlike before where they were silently ignored)
-        sftp.mkdir(Path::new(remote_path), 0o755)
-            .map_err(|e| format!("Cannot create remote directory {}: {}", remote_path, e))?;
+        // Create the root remote directory. A directory that already exists is
+        // fine (the common redeploy case) — only a real failure (permission,
+        // path-is-a-file) should abort.
+        if !sftp.stat(Path::new(remote_path)).map(|s| s.is_dir()).unwrap_or(false) {
+            sftp.mkdir(Path::new(remote_path), 0o755)
+                .map_err(|e| format!("Cannot create remote directory {}: {}", remote_path, e))?;
+        }
 
         let local_root = Path::new(local_path);
         let entries: Vec<_> = walkdir::WalkDir::new(local_path).into_iter().filter_map(|e| e.ok()).collect();
@@ -842,14 +1134,37 @@ pub fn open_stream_channel(
     command: &str,
     app: &AppHandle,
     session_id: &str,
+    elevate: bool,
+    sudo_password: Option<&str>,
 ) -> Result<(Session, Channel), String> {
     let mut sess = Session::new().map_err(|e| format!("Failed to create session: {}", e))?;
     establish_session(&mut sess, ip, port, user, password, private_key, proxy_jump, app, session_id)?;
     sess.set_blocking(true);
 
     let mut channel = sess.channel_session().map_err(|e| e.to_string())?;
-    channel.request_pty("xterm-256color", None, Some((200, 50, 0, 0))).map_err(|e| e.to_string())?;
-    channel.exec(command).map_err(|e| e.to_string())?;
+
+    match (elevate, sudo_password) {
+        // Elevated with a stored password: no PTY (so the password we write is
+        // not echoed into the log output) and feed it to `sudo -S` on stdin.
+        (true, Some(pw)) => {
+            let wrapped = format!("sudo -S -p '' -- sh -c {}", shell_escape(command));
+            channel.exec(&wrapped).map_err(|e| e.to_string())?;
+            channel.write_all(format!("{}\n", pw).as_bytes()).map_err(|e| e.to_string())?;
+            channel.send_eof().ok();
+        }
+        // Elevated without a password: rely on passwordless sudo (NOPASSWD).
+        // `-n` never prompts, so a PTY is fine and keeps tail/journalctl happy.
+        (true, None) => {
+            let wrapped = format!("sudo -n -- sh -c {}", shell_escape(command));
+            channel.request_pty("xterm-256color", None, Some((200, 50, 0, 0))).map_err(|e| e.to_string())?;
+            channel.exec(&wrapped).map_err(|e| e.to_string())?;
+        }
+        // No elevation: original behavior.
+        (false, _) => {
+            channel.request_pty("xterm-256color", None, Some((200, 50, 0, 0))).map_err(|e| e.to_string())?;
+            channel.exec(command).map_err(|e| e.to_string())?;
+        }
+    }
 
     sess.set_blocking(false);
     Ok((sess, channel))
@@ -1085,6 +1400,107 @@ pub fn start_dynamic_forward(
         remote_host: "dynamic".to_string(),
         remote_port: 0,
         tunnel_type: "dynamic".to_string(),
+    })
+}
+
+/// Start a remote port forward (-R): remote server listens on remote_port, forwards to local_host:local_port through SSH
+pub fn start_remote_forward(
+    ip: &str,
+    user: &str,
+    port: u16,
+    password: Option<&str>,
+    private_key: Option<&str>,
+    proxy_jump: Option<&str>,
+    remote_port: u16,
+    local_host: &str,
+    local_port: u16,
+    app: &AppHandle,
+    session_id: &str,
+) -> Result<SshTunnel, String> {
+    let mut sess = Session::new().map_err(|e| e.to_string())?;
+    establish_session(&mut sess, ip, port, user, password, private_key, proxy_jump, app, session_id)?;
+    sess.set_blocking(true);
+
+    // Ask remote to listen. Returns a Listener object.
+    let (mut listener, _) = sess.channel_forward_listen(remote_port, None, None)
+        .map_err(|e| format!("Remote forward listen failed on port {}: {}", remote_port, e))?;
+
+    let stop_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = stop_flag.clone();
+    let lh = local_host.to_string();
+    let lp = local_port;
+    let sess = Arc::new(Mutex::new(sess));
+
+    thread::spawn(move || {
+        // Set session to non-blocking so listener.accept() becomes non-blocking
+        {
+            let guard = match sess.lock() {
+                Ok(g) => g,
+                Err(p) => p.into_inner(),
+            };
+            guard.set_blocking(false);
+        }
+
+        while !flag.load(std::sync::atomic::Ordering::Relaxed) {
+            match listener.accept() {
+                Ok(channel) => {
+                    let lh = lh.clone();
+                    let flag = flag.clone();
+                    thread::spawn(move || {
+                        if let Ok(local_conn) = std::net::TcpStream::connect(format!("{}:{}", lh, lp)) {
+                            let mut local_reader = match local_conn.try_clone() {
+                                Ok(c) => c,
+                                Err(_) => return,
+                            };
+                            let mut local_writer = local_conn;
+                            let mut chan_reader: Channel = channel;
+                            let mut chan_writer = chan_reader.clone();
+
+                            let flag2 = flag.clone();
+                            let t1 = thread::spawn(move || {
+                                let mut buf = [0u8; 8192];
+                                loop {
+                                    if flag2.load(std::sync::atomic::Ordering::Relaxed) { break; }
+                                    match local_reader.read(&mut buf) {
+                                        Ok(0) => break,
+                                        Ok(n) => { if chan_writer.write_all(&buf[..n]).is_err() { break; } }
+                                        Err(_) => break,
+                                    }
+                                }
+                            });
+
+                            let mut buf = [0u8; 8192];
+                            loop {
+                                if flag.load(std::sync::atomic::Ordering::Relaxed) { break; }
+                                match chan_reader.read(&mut buf) {
+                                    Ok(0) => break,
+                                    Ok(n) => { if local_writer.write_all(&buf[..n]).is_err() { break; } }
+                                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                                        thread::sleep(Duration::from_millis(10));
+                                        continue;
+                                    }
+                                    Err(_) => break,
+                                }
+                            }
+                            let _ = t1.join();
+                        }
+                    });
+                }
+                Err(ref e) if e.code() == ssh2::ErrorCode::Session(-37) => {
+                    // -37 is LIBSSH2_ERROR_EAGAIN
+                    thread::sleep(Duration::from_millis(100));
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    Ok(SshTunnel {
+        stop_flag,
+        local_port, // In -R, this is technically the "target" local port
+        remote_host: local_host.to_string(),
+        remote_port, // This is the port listening on the remote
+        tunnel_type: "remote".to_string(),
     })
 }
 

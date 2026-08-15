@@ -25,6 +25,8 @@ pub struct SshConfigEntry {
     pub remote_forwards: Vec<ForwardRule>,
     pub is_wildcard: bool,
     pub is_match_block: bool,
+    pub is_wireguard: bool,
+    pub wg_config: Option<super::wireguard::WireGuardConfig>,
     pub raw_directives: HashMap<String, String>,
 }
 

@@ -225,7 +225,40 @@
 
 .sn-detail-actions {
     display: flex;
+    align-items: center;
     gap: 8px;
+}
+
+.sn-sudo-toggle {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 12px;
+    font-weight: 500;
+    padding: 7px 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    user-select: none;
+    color: #9ca3af;
+    background: #1f2937;
+    border: 1px solid #374151;
+    transition: all 0.15s;
+}
+
+.sn-sudo-toggle:hover {
+    color: #fff;
+}
+
+.sn-sudo-toggle.active {
+    color: #fbbf24;
+    border-color: #b45309;
+    background: rgba(180, 83, 9, 0.15);
+}
+
+.sn-sudo-toggle input {
+    accent-color: #f59e0b;
+    cursor: pointer;
+    margin: 0;
 }
 
 .sn-btn {

@@ -49,6 +49,9 @@ export default function Modal({
                     {type === "confirm" && (
                         <div className="modal-message">{children}</div>
                     )}
+                    {type !== "prompt" && type !== "confirm" && (
+                        <div className="modal-custom-content">{children}</div>
+                    )}
 
                     <div className="modal-actions">
                         {actions ? (

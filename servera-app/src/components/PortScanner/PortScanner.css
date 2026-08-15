@@ -209,6 +209,35 @@
     text-transform: uppercase;
 }
 
+.ps-kill-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    width: 100%;
+    margin-top: 14px;
+    background: rgba(239, 68, 68, 0.08);
+    border: 1px solid rgba(239, 68, 68, 0.25);
+    color: #f87171;
+    font-size: 12px;
+    font-weight: 600;
+    height: 32px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.ps-kill-btn:hover:not(:disabled) {
+    background: rgba(239, 68, 68, 0.16);
+    border-color: rgba(239, 68, 68, 0.5);
+    color: #fca5a5;
+}
+
+.ps-kill-btn:disabled {
+    opacity: 0.4;
+    cursor: default;
+}
+
 .mono {
     font-family: 'JetBrains Mono', monospace;
 }

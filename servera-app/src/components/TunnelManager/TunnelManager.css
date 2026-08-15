@@ -73,6 +73,17 @@
     color: #4b5563;
 }
 
+.tm-field-group {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.tm-sep {
+    color: #4b5563;
+    font-weight: 700;
+}
+
 .tm-create-btn {
     display: flex;
     align-items: center;
@@ -149,6 +160,11 @@
     color: #10b981;
 }
 
+.tm-tunnel-icon.remote {
+    background: rgba(245, 158, 11, 0.12);
+    color: #f59e0b;
+}
+
 .tm-tunnel-icon.dynamic {
     background: rgba(167, 139, 250, 0.12);
     color: #a78bfa;
@@ -185,9 +201,61 @@
     color: #10b981;
 }
 
+.tm-tunnel-badge.remote {
+    background: rgba(245, 158, 11, 0.12);
+    color: #f59e0b;
+}
+
 .tm-tunnel-badge.dynamic {
     background: rgba(167, 139, 250, 0.12);
     color: #a78bfa;
+}
+
+.tm-legend {
+    display: flex;
+    align-items: center;
+    font-size: 11px;
+    color: #6b7280;
+}
+
+.tm-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+    margin-right: 6px;
+}
+
+.tm-dot.local { background: #10b981; }
+.tm-dot.remote { background: #f59e0b; }
+.tm-dot.dynamic { background: #a78bfa; }
+
+.tm-info-card {
+    margin-top: 32px;
+    background: rgba(59, 130, 246, 0.05);
+    border: 1px solid rgba(59, 130, 246, 0.15);
+    border-radius: 12px;
+    padding: 20px 24px;
+    display: flex;
+    gap: 16px;
+}
+
+.tm-info-content h4 {
+    margin: 0 0 8px 0;
+    font-size: 14px;
+    font-weight: 600;
+    color: #fff;
+}
+
+.tm-info-content p {
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.6;
+    color: #9ca3af;
+}
+
+.tm-info-content b {
+    color: #e5e7eb;
 }
 
 .tm-close-btn {

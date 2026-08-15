@@ -1,6 +1,7 @@
 pub mod parser;
 pub mod resolver;
 pub mod mapper;
+pub mod wireguard;
 
 
 

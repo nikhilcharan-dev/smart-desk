@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { MAIN_SESSION_ID } from '../../utils/terminal';
-import { Network, RefreshCw, Search, X, Globe, Shield, Database, Server } from 'lucide-react';
+import { Network, RefreshCw, Search, X, Globe, Shield, Database, Server, Ban } from 'lucide-react';
 import './PortScanner.css';
 
 const KNOWN_PORTS = {
@@ -49,10 +49,13 @@ function parsePorts(raw) {
 
         const known = KNOWN_PORTS[port];
 
+        const pidMatch = processInfo.match(/pid=(\d+)/);
+
         return {
             port,
             address: address || '*',
             state,
+            pid: pidMatch ? parseInt(pidMatch[1], 10) : null,
             process: processInfo.replace(/users:\(\("|"\)\)/g, '').replace(/,.*$/, '') || 'unknown',
             service: known?.name || `Port ${port}`,
             color: known?.color || '#6b7280',
@@ -65,20 +68,64 @@ export default function PortScanner() {
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
     const [search, setSearch] = useState('');
+    const [killing, setKilling] = useState(null); // pid currently being killed
 
     const scanPorts = async () => {
         setLoading(true);
         setError(null);
         try {
-            const output = await invoke('exec_ssh_command', {
-                sessionId: MAIN_SESSION_ID,
-                command: 'ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null'
-            });
+            let output;
+            try {
+                // Elevate so PIDs of root-owned processes are visible (needed for
+                // Close Port). Routes through the backend sudo path, which uses
+                // the profile's stored sudo password or passwordless sudo.
+                output = await invoke('exec_ssh_command_sudo', {
+                    sessionId: MAIN_SESSION_ID,
+                    command: 'ss -tlnp || netstat -tlnp'
+                });
+            } catch {
+                // No sudo available — fall back to an unprivileged scan. Process
+                // names for other users' sockets will be missing.
+                output = await invoke('exec_ssh_command', {
+                    sessionId: MAIN_SESSION_ID,
+                    command: 'ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null'
+                });
+            }
             setPorts(parsePorts(output));
         } catch (err) {
             setError(err.toString());
         } finally {
             setLoading(false);
+        }
+    };
+
+    const closePort = async (p) => {
+        if (!p.pid) {
+            setError(`Cannot close port ${p.port}: no PID found (try scanning with sufficient privileges).`);
+            return;
+        }
+        if (!window.confirm(`Close port ${p.port}?\n\nThis will kill process "${p.process}" (PID ${p.pid}). Any service on this port will stop.`)) {
+            return;
+        }
+        setKilling(p.pid);
+        setError(null);
+        try {
+            // Unmasked kill so a permission failure is visible to the backend,
+            // which then auto-escalates: plain `kill` for the user's own
+            // processes, sudo (stored password / NOPASSWD) for root-owned ones.
+            await invoke('exec_ssh_command', {
+                sessionId: MAIN_SESSION_ID,
+                command: `kill -9 ${p.pid}`
+            });
+            setTimeout(scanPorts, 500);
+        } catch (err) {
+            const raw = String(err);
+            const msg = raw.includes('SUDO_PASSWORD_REQUIRED')
+                ? `Cannot close port ${p.port}: this is a root-owned process. Add a sudo password to this profile (Authentication → Sudo password) and reconnect.`
+                : `Failed to close port ${p.port}: ${raw}`;
+            setError(msg);
+        } finally {
+            setKilling(null);
         }
     };
 
@@ -151,9 +198,20 @@ export default function PortScanner() {
                             </div>
                             <div className="ps-detail">
                                 <span className="ps-label">Process</span>
-                                <span className="ps-value mono" title={p.process}>{p.process}</span>
+                                <span className="ps-value mono" title={p.process}>
+                                    {p.process}{p.pid ? ` (${p.pid})` : ''}
+                                </span>
                             </div>
                         </div>
+                        <button
+                            className="ps-kill-btn"
+                            onClick={() => closePort(p)}
+                            disabled={!p.pid || killing === p.pid}
+                            title={p.pid ? `Kill PID ${p.pid} to close port ${p.port}` : 'PID unavailable — rescan with sufficient privileges'}
+                        >
+                            <Ban size={13} className={p.pid && killing === p.pid ? 'spin' : ''} />
+                            <span>{p.pid && killing === p.pid ? 'Closing…' : 'Close Port'}</span>
+                        </button>
                     </div>
                 ))}
                 {filtered.length === 0 && !loading && (

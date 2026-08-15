@@ -1,9 +1,10 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { FileSearch, CheckCircle, AlertTriangle, Shield, Key, ChevronRight, ChevronLeft, Download } from "lucide-react";
+import { open } from "@tauri-apps/plugin-dialog";
+import { FileSearch, CheckCircle, AlertTriangle, Shield, Key, ChevronRight, ChevronLeft, Download, FolderOpen, Waypoints } from "lucide-react";
 import "./ImportWizard.css";
 
-export default function ImportWizard({ onComplete, onCancel }) {
+export default function ImportWizard({ onComplete, onCancel, mode = "import", initialPath = null }) {
     const [step, setStep] = useState(1);
     const [detection, setDetection] = useState(null);
     const [entries, setEntries] = useState([]);
@@ -14,9 +15,20 @@ export default function ImportWizard({ onComplete, onCancel }) {
 
     useEffect(() => {
         if (step === 1) {
-            detectConfig();
+            if (initialPath) {
+                const det = {
+                    path: initialPath,
+                    exists: true,
+                    entry_count: "..."
+                };
+                setDetection(det);
+                // Auto-trigger parse for manually selected files
+                handleParse(det.path);
+            } else {
+                detectConfig();
+            }
         }
-    }, [step]);
+    }, [step, initialPath]);
 
     const detectConfig = async () => {
         setLoading(true);
@@ -30,15 +42,47 @@ export default function ImportWizard({ onComplete, onCancel }) {
         }
     };
 
-    const handleParse = async () => {
+    const handleBrowse = async () => {
+        try {
+            const selected = await open({
+                multiple: false,
+                directory: false,
+                filters: [{ name: "SSH Config", extensions: ["conf", "config", "*"] }]
+            });
+            if (selected) {
+                setDetection({
+                    path: selected,
+                    exists: true,
+                    entry_count: "..." // Will be determined on scan
+                });
+            }
+        } catch (err) {
+            console.error(err);
+        }
+    };
+
+    const handleParse = async (overridePath = null) => {
+        const targetPath = overridePath || detection?.path;
+        if (!targetPath) return;
+
         setLoading(true);
         setError(null);
         try {
-            const res = await invoke("parse_ssh_config", { path: detection.path });
+            const res = await invoke("parse_ssh_config", { path: targetPath });
             // Add unique ID for internal selection
             const entriesWithIds = res.map((e, idx) => ({ ...e, _id: idx }));
             setEntries(entriesWithIds);
-            setSelectedIds(new Set(entriesWithIds.filter(e => !e.is_wildcard).map(e => e._id)));
+            
+            // Auto-select entries that have tunnel rules if in gateway mode
+            if (mode === "gateway") {
+                const tunnelEntries = entriesWithIds.filter(e => 
+                    e.is_wireguard || (e.local_forwards?.length > 0 || e.remote_forwards?.length > 0)
+                ).map(e => e._id);
+                setSelectedIds(new Set(tunnelEntries));
+            } else {
+                setSelectedIds(new Set(entriesWithIds.filter(e => !e.is_wildcard).map(e => e._id)));
+            }
+            
             setStep(2);
         } catch (err) {
             setError("Failed to parse config: " + err);
@@ -47,16 +91,36 @@ export default function ImportWizard({ onComplete, onCancel }) {
         }
     };
 
-    const handleImport = async () => {
+    const handleAction = async () => {
         setLoading(true);
         setError(null);
         try {
-            const selectedEntries = entries.filter(e => selectedIds.has(e._id));
-            const res = await invoke("import_ssh_profiles", { entries: selectedEntries });
-            setResult(res);
+            const selected = entries.filter(e => selectedIds.has(e._id));
+            
+            if (mode === "gateway") {
+                for (const entry of selected) {
+                    try {
+                        await invoke("start_tunnels_from_entry", { entry });
+                    } catch (err) {
+                        console.error("Failed to start tunnel for entry:", entry, err);
+                    }
+                }
+                
+                // Also save them as profiles
+                await invoke("import_ssh_profiles", { entries: selected });
+                
+                setResult({
+                    imported: selected.length,
+                    skipped: 0,
+                    type: 'gateways'
+                });
+            } else {
+                const res = await invoke("import_ssh_profiles", { entries: selected });
+                setResult(res);
+            }
             setStep(3);
         } catch (err) {
-            setError("Failed to import profiles: " + err);
+            setError("Action failed: " + err);
         } finally {
             setLoading(false);
         }
@@ -77,16 +141,22 @@ export default function ImportWizard({ onComplete, onCancel }) {
                 <p style={{ color: "#8b949e", marginTop: 8 }}>
                     We found an SSH config file on your system. Importing it will instantly add your server profiles to Servera.
                 </p>
-                <div className="path-preview">
-                    {detection?.path || "Detecting..."}
+                <div className="path-preview-container">
+                    <div className="path-preview">
+                        {detection?.path || "Detecting..."}
+                    </div>
+                    <button className="browse-inline-btn" onClick={handleBrowse} title="Select manually">
+                        <FolderOpen size={14} />
+                        Choose manually
+                    </button>
                 </div>
                 {detection?.exists ? (
-                    <div style={{ fontSize: 13, color: "#3fb950", display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
+                    <div style={{ fontSize: 13, color: "#3fb950", display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, marginTop: 12 }}>
                         <CheckCircle size={14} />
-                        Found {detection.entry_count} host definitions
+                        {detection.entry_count === "..." ? "Custom file selected" : `Found ${detection.entry_count} host definitions`}
                     </div>
                 ) : (
-                    <div style={{ fontSize: 13, color: "#f85149" }}>
+                    <div style={{ fontSize: 13, color: "#f85149", marginTop: 12 }}>
                         Could not find config at default location.
                     </div>
                 )}
@@ -107,9 +177,9 @@ export default function ImportWizard({ onComplete, onCancel }) {
 
     const renderStep2 = () => (
         <div className="wizard-content">
-            <h3>Select Profiles to Import</h3>
+            <h3>{mode === 'gateway' ? 'Select Gateway Tunnels' : 'Select Profiles to Import'}</h3>
             <p style={{ color: "#8b949e", fontSize: 13, marginBottom: 16 }}>
-                Choose which servers you want to add to your dashboard. Wildcard entries have been applied as defaults.
+                Choose which servers you want to {mode === 'gateway' ? 'establish tunnels for' : 'add to your dashboard'}.
             </p>
 
             <div className="config-table-container">
@@ -129,6 +199,7 @@ export default function ImportWizard({ onComplete, onCancel }) {
                             <th>Host</th>
                             <th>Hostname / IP</th>
                             <th>User</th>
+                            <th>Tunnels</th>
                             <th>Auth</th>
                         </tr>
                     </thead>
@@ -153,6 +224,20 @@ export default function ImportWizard({ onComplete, onCancel }) {
                                 <td>{entry.hostname || "---"}</td>
                                 <td>{entry.user || "root"}</td>
                                 <td>
+                                    {entry.is_wireguard ? (
+                                        <div className="tunnel-badge" style={{ borderColor: '#238636', background: 'rgba(35, 134, 54, 0.1)', color: '#3fb950' }}>
+                                            <Shield size={10} /> WireGuard VPN
+                                        </div>
+                                    ) : (entry.local_forwards?.length > 0 || entry.remote_forwards?.length > 0) ? (
+                                        <div className="tunnel-badge">
+                                            <Waypoints size={10} />
+                                            {entry.local_forwards.length + entry.remote_forwards.length} rules
+                                        </div>
+                                    ) : (
+                                        <span style={{ color: '#484f58', fontSize: 11 }}>None</span>
+                                    )}
+                                </td>
+                                <td>
                                     {entry.identity_files.length > 0 ? (
                                         <div className="auth-badge">
                                             <Key size={10} /> Key
@@ -174,10 +259,10 @@ export default function ImportWizard({ onComplete, onCancel }) {
                 <div style={{ flex: 1 }}></div>
                 <button 
                     className="btn btn-primary" 
-                    onClick={handleImport}
+                    onClick={handleAction}
                     disabled={loading || selectedIds.size === 0}
                 >
-                    {loading ? "Importing..." : `Import ${selectedIds.size} Profiles`}
+                    {loading ? "Processing..." : (mode === 'gateway' ? `Start ${selectedIds.size} Gateway Tunnels` : `Import ${selectedIds.size} Profiles`)}
                 </button>
             </div>
         </div>
@@ -189,14 +274,22 @@ export default function ImportWizard({ onComplete, onCancel }) {
                 <div className="success-icon">
                     <CheckCircle size={64} />
                 </div>
-                <h2>Import Successful!</h2>
+                <h2>{result?.type === 'gateways' ? 'Gateways Established!' : 'Import Successful!'}</h2>
                 <p style={{ color: "#8b949e", marginTop: 12 }}>
-                    Successfully imported <strong>{result?.imported}</strong> profiles.
-                    {result?.skipped > 0 && ` ${result.skipped} profiles were skipped as duplicates.`}
+                    {result?.type === 'gateways' ? (
+                        <>Successfully established <strong>{result.imported}</strong> SSH tunnels.</>
+                    ) : (
+                        <>
+                            Successfully imported <strong>{result?.imported}</strong> profiles.
+                            {result?.skipped > 0 && ` ${result.skipped} profiles were skipped as duplicates.`}
+                        </>
+                    )}
                 </p>
                 
                 <div style={{ marginTop: 32, display: 'flex', flexDirection: 'column', gap: 12 }}>
-                    <button className="btn btn-primary" onClick={onComplete}>Go to Dashboard</button>
+                    <button className="btn btn-primary" onClick={onComplete}>
+                        {result?.type === 'gateways' ? 'View Gateways' : 'Go to Dashboard'}
+                    </button>
                     <button className="btn btn-secondary" onClick={onCancel}>Close</button>
                 </div>
             </div>

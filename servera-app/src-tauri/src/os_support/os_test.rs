@@ -49,7 +49,7 @@ fn test_detect_none() {
 
 #[test]
 fn test_linux_monitor_parsing() {
-    let monitor = get_default_monitor();
+    let monitor = linux_monitor::LinuxMonitor;
     let mock_output = r#"
 up 2 hours, 30 minutes
 ---

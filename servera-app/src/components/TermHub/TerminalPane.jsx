@@ -94,6 +94,7 @@ export default function TerminalPane({ sessionId, profile, isActive, onFocus, on
             }
             // Ctrl+V / Ctrl+Shift+V → paste from clipboard into terminal
             if (e.key === 'v' || e.key === 'V') {
+                e.preventDefault();
                 navigator.clipboard.readText().then(text => {
                     if (text) invoke("send_ssh_input", { sessionId, input: text });
                 }).catch(() => {});

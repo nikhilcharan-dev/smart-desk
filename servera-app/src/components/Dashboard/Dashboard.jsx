@@ -100,7 +100,7 @@ export default function Dashboard({ user, ip, profileName }) {
                             const n = Number(v);
                             tempVal = n > 1000 ? `${(n / 1000).toFixed(1)}\u00b0C` : `${n.toFixed(1)}\u00b0C`;
                         }
-                    } catch {}
+                    } catch { /* temperature is optional \u2014 many VMs/cloud hosts expose no thermal zone */ }
                     if (!tempVal || tempVal === "N/A") {
                         try {
                             const virtCheck = await invoke("exec_ssh_command", {
@@ -109,7 +109,7 @@ export default function Dashboard({ user, ip, profileName }) {
                             });
                             const vt = virtCheck.trim().toLowerCase();
                             if (vt && vt !== "none" && vt !== "") isVirt = true;
-                        } catch {}
+                        } catch { /* virtualization hint is optional — ignore probe failures */ }
                     }
                 }
 

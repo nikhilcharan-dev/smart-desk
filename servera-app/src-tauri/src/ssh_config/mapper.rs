@@ -17,6 +17,15 @@ pub fn map_entry_to_profile(entry: &SshConfigEntry) -> Vec<Profile> {
         let private_key_path = entry.identity_files.first().cloned();
         let proxy_jump = entry.proxy_jump.clone();
 
+        let mut tags = vec!["imported".to_string()];
+        let mut profile_tunnels = Vec::new();
+        profile_tunnels.extend(entry.local_forwards.clone());
+        profile_tunnels.extend(entry.remote_forwards.clone());
+
+        if entry.is_wireguard || !profile_tunnels.is_empty() {
+            tags.push("gateway".to_string());
+        }
+
         profiles.push(Profile {
             id,
             name,
@@ -24,11 +33,16 @@ pub fn map_entry_to_profile(entry: &SshConfigEntry) -> Vec<Profile> {
             user,
             port,
             private_key_path,
-            tags: vec!["imported".to_string()],
+            tags,
             color: None,
             last_connected: None,
             proxy_jump,
             remote_os: None,
+            tunnels: if profile_tunnels.is_empty() { None } else { Some(profile_tunnels) },
+            wg_config: entry.wg_config.clone(),
+            wg_mode: None,
+            default_local_path: None,
+            default_remote_path: None,
         });
     }
 

@@ -7,12 +7,15 @@ mod ssh_client;
 mod local_ops;
 mod ssh_config;
 mod os_support;
+mod wireguard;
+mod known_hosts;
+mod vscode_remote;
 
 use ai_config::{AiConfig, AiConfigManager};
 use profile_manager::{Profile, ProfileManager};
 use ssh_client::{spawn_read_thread, spawn_log_reader, SshConnection, SshExecConn, SshTunnel};
 use std::sync::{Arc, Mutex};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tauri::{AppHandle, State, Manager};
 use serde::{Deserialize, Serialize};
 use sysinfo::{System, Disks};
@@ -25,6 +28,7 @@ type SharedSession = Arc<Mutex<Option<SshConnection>>>;
 type SharedExecConn = Arc<Mutex<Option<SshExecConn>>>;
 type SharedChannel = Arc<Mutex<Option<ssh2::Channel>>>;
 type MfaSender = tokio::sync::oneshot::Sender<Vec<String>>;
+type HostKeySender = tokio::sync::oneshot::Sender<bool>;
 
 struct LogStreamHandle {
     #[allow(dead_code)]
@@ -37,8 +41,14 @@ struct AppState {
     sessions: Mutex<HashMap<String, SharedSession>>,
     exec_conns: Mutex<HashMap<String, SharedExecConn>>,
     mfa_channels: Mutex<HashMap<String, MfaSender>>,
+    host_key_channels: Mutex<HashMap<String, HostKeySender>>,
+    // Session ids that trust an unknown host key on first sight instead of
+    // prompting — set for saved-profile connections, where the user already
+    // vouched for the host by saving it. Changed keys still hard-refuse.
+    auto_trust_sessions: Mutex<HashSet<String>>,
     log_streams: Mutex<HashMap<String, LogStreamHandle>>,
     tunnels: Mutex<HashMap<String, SshTunnel>>,
+    wireguard: wireguard::GatewaySlot,
     system: Mutex<System>,
 }
 
@@ -48,8 +58,11 @@ impl AppState {
             sessions: Mutex::new(HashMap::new()),
             exec_conns: Mutex::new(HashMap::new()),
             mfa_channels: Mutex::new(HashMap::new()),
+            host_key_channels: Mutex::new(HashMap::new()),
+            auto_trust_sessions: Mutex::new(HashSet::new()),
             log_streams: Mutex::new(HashMap::new()),
             tunnels: Mutex::new(HashMap::new()),
+            wireguard: Mutex::new(None),
             system: Mutex::new(System::new_all()),
         }
     }
@@ -66,7 +79,17 @@ impl AppState {
 
     fn close_session(&self, id: &str) {
         let mut guard = self.sessions.lock().unwrap_or_else(|p| p.into_inner());
-        guard.remove(id);
+        let removed = guard.remove(id);
+        drop(guard);
+        // Removing the map entry is not enough: the reader thread spawned by
+        // `spawn_read_thread` holds its own Arc clone, so the connection would
+        // stay alive and keep emitting `ssh-output:<id>` from the OLD host —
+        // bleeding into the terminal after a reconnect to a different server.
+        // Clearing the inner Option makes the thread see `None` and break, and
+        // runs SshConnection::drop so the channel is actually torn down.
+        if let Some(session) = removed {
+            *lock_session(&session) = None;
+        }
     }
 
     fn get_exec_conn(&self, id: &str) -> Option<SharedExecConn> {
@@ -81,7 +104,13 @@ impl AppState {
 
     fn close_exec_conn(&self, id: &str) {
         let mut guard = self.exec_conns.lock().unwrap_or_else(|p| p.into_inner());
-        guard.remove(id);
+        let removed = guard.remove(id);
+        drop(guard);
+        // An in-flight `exec_ssh_command` may still hold an Arc clone; clear the
+        // inner Option so it fails fast instead of running against the old host.
+        if let Some(exec) = removed {
+            *lock_exec(&exec) = None;
+        }
     }
 
     fn register_mfa(&self, id: &str, tx: MfaSender) {
@@ -97,6 +126,52 @@ impl AppState {
         } else {
             false
         }
+    }
+
+    fn register_host_key(&self, id: &str, tx: HostKeySender) {
+        let mut guard = self.host_key_channels.lock().unwrap_or_else(|p| p.into_inner());
+        guard.insert(id.to_string(), tx);
+    }
+
+    /// Remove a pending host-key registration without answering it (timeout cleanup).
+    fn take_host_key(&self, id: &str) {
+        let mut guard = self.host_key_channels.lock().unwrap_or_else(|p| p.into_inner());
+        guard.remove(id);
+    }
+
+    /// Mark (or clear) a session as auto-trusting unknown host keys.
+    fn set_auto_trust(&self, id: &str, on: bool) {
+        let mut guard = self.auto_trust_sessions.lock().unwrap_or_else(|p| p.into_inner());
+        if on { guard.insert(id.to_string()); } else { guard.remove(id); }
+    }
+
+    fn is_auto_trust(&self, id: &str) -> bool {
+        let guard = self.auto_trust_sessions.lock().unwrap_or_else(|p| p.into_inner());
+        guard.contains(id)
+    }
+
+    fn resolve_host_key(&self, id: &str, accepted: bool) -> bool {
+        let mut guard = self.host_key_channels.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(tx) = guard.remove(id) {
+            let _ = tx.send(accepted);
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// RAII guard that clears a session's auto-trust flag on every exit path, so an
+/// early `?` return mid-dial can't leave the flag set — which would otherwise
+/// silently trust a later ad-hoc connection that reuses the same session id.
+struct AutoTrustGuard<'a> {
+    state: &'a AppState,
+    id: String,
+}
+
+impl Drop for AutoTrustGuard<'_> {
+    fn drop(&mut self) {
+        self.state.set_auto_trust(&self.id, false);
     }
 }
 
@@ -115,7 +190,7 @@ fn lock_exec(conn: &SharedExecConn) -> std::sync::MutexGuard<'_, Option<SshExecC
    ========================= */
 
 #[tauri::command]
-fn save_profile(app: AppHandle, profile: Profile, password: Option<String>) -> Result<(), String> {
+fn save_profile(app: AppHandle, profile: Profile, password: Option<String>, sudo_password: Option<String>) -> Result<(), String> {
     let mgr = ProfileManager::new(&app);
     let mut profiles = mgr.load()?;
 
@@ -127,12 +202,33 @@ fn save_profile(app: AppHandle, profile: Profile, password: Option<String>) -> R
 
     mgr.save(profiles)?;
 
+    let key_user = format!("profile:{}", profile.id);
     if let Some(pwd) = password {
-        let key_user = format!("profile:{}", profile.id);
         profile_manager::save_password("servera", &key_user, &pwd)?;
     }
 
+    // Sudo password lives only in the keyring under a separate service, never in
+    // profiles.json. An empty string is a clear-request (delete the entry); a
+    // None means "unchanged" so editing other fields does not wipe it.
+    match sudo_password {
+        Some(pwd) if pwd.is_empty() => {
+            let _ = profile_manager::delete_password("servera-sudo", &key_user);
+        }
+        Some(pwd) => {
+            profile_manager::save_password("servera-sudo", &key_user, &pwd)?;
+        }
+        None => {}
+    }
+
     Ok(())
+}
+
+/// Report whether a sudo password is stored for this profile, so the edit form
+/// can show "set" vs "not set" without ever exposing the value itself.
+#[tauri::command]
+fn has_sudo_password(id: String) -> bool {
+    let key_user = format!("profile:{}", id);
+    profile_manager::get_password("servera-sudo", &key_user).is_ok()
 }
 
 #[tauri::command]
@@ -149,7 +245,23 @@ fn delete_profile(app: AppHandle, id: String) -> Result<(), String> {
 
     let key_user = format!("profile:{}", id);
     let _ = profile_manager::delete_password("servera", &key_user);
+    let _ = profile_manager::delete_password("servera-sudo", &key_user);
+    let _ = profile_manager::delete_password("servera-wireguard", &id);
+    let _ = profile_manager::delete_password("servera-wireguard-psk", &id);
     Ok(())
+}
+
+#[tauri::command]
+fn set_profile_default_path(app: AppHandle, id: String, mode: String, path: String) -> Result<(), String> {
+    let mgr = ProfileManager::new(&app);
+    let mut profiles = mgr.load()?;
+    let profile = profiles.iter_mut().find(|p| p.id == id).ok_or("Profile not found")?;
+    if mode == "local" {
+        profile.default_local_path = Some(path);
+    } else {
+        profile.default_remote_path = Some(path);
+    }
+    mgr.save(profiles)
 }
 
 #[tauri::command]
@@ -160,6 +272,13 @@ async fn connect_to_profile(
     session_id: String,
 ) -> Result<String, String> {
     tokio::task::block_in_place(|| {
+        // The user vouched for this host by saving it as a profile, so trust an
+        // unknown host key on first sight instead of prompting. The guard clears
+        // the flag when the dial finishes or bails out. A *changed* key is still
+        // hard-refused, and ad-hoc/Quick-Connect dials still get the prompt.
+        state.set_auto_trust(&session_id, true);
+        let _trust_guard = AutoTrustGuard { state: state.inner(), id: session_id.clone() };
+
         let mgr = ProfileManager::new(&app);
         let mut profiles = mgr.load()?;
         let profile_idx = profiles.iter().position(|p| p.id == profile_id).ok_or("Profile not found")?;
@@ -172,13 +291,22 @@ async fn connect_to_profile(
             return Err("Password not found and no private key provided".to_string());
         }
 
-        let conn = SshConnection::new(
-            &profile.ip, 
-            &profile.user, 
+        let (dial_ip, dial_port, dial_jump) = wireguard::resolve_first_hop(
+            &app,
+            &state.wireguard,
+            &profile.ip,
             profile.port,
-            password.as_deref(), 
-            profile.private_key_path.as_deref(),
             profile.proxy_jump.as_deref(),
+            profile.wg_mode.as_deref(),
+        )?;
+
+        let conn = SshConnection::new(
+            &dial_ip,
+            &profile.user,
+            dial_port,
+            password.as_deref(),
+            profile.private_key_path.as_deref(),
+            dial_jump.as_deref(),
             &app,
             &session_id
         )?;
@@ -192,12 +320,12 @@ async fn connect_to_profile(
         let stored_os = profiles[profile_idx].remote_os.as_ref().map(|s| ssh_client::RemoteOs::from_str(s));
 
         let exec_conn = SshExecConn::connect(
-            &profiles[profile_idx].ip, 
-            &profiles[profile_idx].user, 
-            profiles[profile_idx].port,
-            password.as_deref(), 
+            &dial_ip,
+            &profiles[profile_idx].user,
+            dial_port,
+            password.as_deref(),
             profiles[profile_idx].private_key_path.as_deref(),
-            profiles[profile_idx].proxy_jump.as_deref(),
+            dial_jump.as_deref(),
             &app,
             &session_id,
             stored_os
@@ -208,6 +336,11 @@ async fn connect_to_profile(
             profiles[profile_idx].remote_os = Some(exec_conn.remote_os.as_str().to_string());
             let _ = mgr.save(profiles);
         }
+
+        // Attach the profile's sudo password (from the keyring) so elevated
+        // commands can escalate without re-prompting.
+        let mut exec_conn = exec_conn;
+        exec_conn.set_sudo_password(profile_manager::get_password("servera-sudo", &key_user).ok());
 
         let exec = state.ensure_exec_conn(&session_id);
         *lock_exec(&exec) = Some(exec_conn);
@@ -234,7 +367,11 @@ async fn start_ssh_session(
     proxy_jump: Option<String>,
 ) -> Result<String, String> {
     tokio::task::block_in_place(|| {
-        let conn = SshConnection::new(&ip, &user, port, password.as_deref(), private_key.as_deref(), proxy_jump.as_deref(), &app, &session_id)?;
+        let (dial_ip, dial_port, dial_jump) = wireguard::resolve_first_hop(
+            &app, &state.wireguard, &ip, port, proxy_jump.as_deref(), None,
+        )?;
+
+        let conn = SshConnection::new(&dial_ip, &user, dial_port, password.as_deref(), private_key.as_deref(), dial_jump.as_deref(), &app, &session_id)?;
         let fingerprint = conn.host_key_fingerprint.clone().unwrap_or_default();
 
         let session = state.ensure_session(&session_id);
@@ -242,7 +379,7 @@ async fn start_ssh_session(
         *guard = Some(conn);
         drop(guard);
 
-        let exec_conn = SshExecConn::connect(&ip, &user, port, password.as_deref(), private_key.as_deref(), proxy_jump.as_deref(), &app, &session_id, None)?;
+        let exec_conn = SshExecConn::connect(&dial_ip, &user, dial_port, password.as_deref(), private_key.as_deref(), dial_jump.as_deref(), &app, &session_id, None)?;
         let exec = state.ensure_exec_conn(&session_id);
         *lock_exec(&exec) = Some(exec_conn);
 
@@ -254,6 +391,18 @@ async fn start_ssh_session(
 #[tauri::command]
 fn resolve_mfa_response(state: State<'_, AppState>, session_id: String, responses: Vec<String>) -> bool {
     state.resolve_mfa(&session_id, responses)
+}
+
+#[tauri::command]
+fn resolve_host_key_response(state: State<'_, AppState>, session_id: String, accepted: bool) -> bool {
+    state.resolve_host_key(&session_id, accepted)
+}
+
+/// Remove a stored host key so the next connection re-prompts. Used after a
+/// server's key was legitimately rotated and the change was refused.
+#[tauri::command]
+fn forget_known_host(app: AppHandle, host: String, port: u16) -> Result<(), String> {
+    known_hosts::forget(&app, &host, port)
 }
 
 #[tauri::command]
@@ -273,6 +422,52 @@ fn close_ssh_session(state: State<'_, AppState>, session_id: String) {
     state.close_exec_conn(&session_id);
 }
 
+/// Full teardown for logout: drop every SSH session (main terminal *and* every
+/// TermHub pane), every exec connection, every log stream and every tunnel, plus
+/// any pending prompt channels. Closing only the main session left background
+/// readers and forwards attached to the previous host, so output from the old
+/// server kept arriving after connecting to a new one.
+#[tauri::command]
+fn disconnect_all(state: State<'_, AppState>) {
+    let sessions: Vec<SharedSession> = {
+        let mut guard = state.sessions.lock().unwrap_or_else(|p| p.into_inner());
+        guard.drain().map(|(_, s)| s).collect()
+    };
+    for session in sessions {
+        *lock_session(&session) = None;
+    }
+
+    let execs: Vec<SharedExecConn> = {
+        let mut guard = state.exec_conns.lock().unwrap_or_else(|p| p.into_inner());
+        guard.drain().map(|(_, c)| c).collect()
+    };
+    for exec in execs {
+        *lock_exec(&exec) = None;
+    }
+
+    {
+        let mut streams = state.log_streams.lock().unwrap_or_else(|p| p.into_inner());
+        for (_, handle) in streams.drain() {
+            handle.stop_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+            let mut ch = handle.channel.lock().unwrap_or_else(|p| p.into_inner());
+            *ch = None;
+        }
+    }
+
+    {
+        let mut tunnels = state.tunnels.lock().unwrap_or_else(|p| p.into_inner());
+        for (_, tunnel) in tunnels.drain() {
+            tunnel.stop_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    // Dropping the senders wakes anything blocked on a prompt so a half-finished
+    // handshake can't resolve against the next connection's session id.
+    state.mfa_channels.lock().unwrap_or_else(|p| p.into_inner()).clear();
+    state.host_key_channels.lock().unwrap_or_else(|p| p.into_inner()).clear();
+    state.auto_trust_sessions.lock().unwrap_or_else(|p| p.into_inner()).clear();
+}
+
 #[tauri::command]
 fn resize_terminal(state: State<'_, AppState>, session_id: String, cols: u32, rows: u32) -> Result<(), String> {
     if let Some(session) = state.get_session(&session_id) {
@@ -290,9 +485,31 @@ async fn exec_ssh_command(state: State<'_, AppState>, session_id: String, comman
     tokio::task::block_in_place(|| {
         let guard = lock_exec(&exec);
         guard.as_ref().ok_or_else(|| "No active exec session".to_string())
-            .and_then(|conn| conn.exec_command(&command))
+            // Auto-fallback: run as the login user, transparently escalating to
+            // sudo only when the command fails for lack of privileges.
+            .and_then(|conn| conn.exec_command_auto(&command))
     })
 }
+
+/// Always-elevate variant of `exec_ssh_command`. Runs the command through the
+/// sudo path (`sudo -n`, then `sudo -S` with the profile's stored password)
+/// regardless of whether the plain command would have succeeded — used by the
+/// "Run with sudo" toggle for commands that succeed with degraded output as a
+/// normal user (e.g. `ss -tlnp` without process names).
+#[tauri::command]
+async fn exec_ssh_command_sudo(state: State<'_, AppState>, session_id: String, command: String) -> Result<String, String> {
+    let exec = state.get_exec_conn(&session_id).ok_or("No exec session found")?;
+    tokio::task::block_in_place(|| {
+        let guard = lock_exec(&exec);
+        guard.as_ref().ok_or_else(|| "No active exec session".to_string())
+            .and_then(|conn| conn.exec_command_sudo(&command))
+    })
+}
+
+
+/* =========================
+   FLEET COMMANDS
+   ========================= */
 
 /* =========================
    SFTP COMMANDS
@@ -305,6 +522,16 @@ async fn sftp_list(state: State<'_, AppState>, session_id: String, path: String)
         let guard = lock_exec(&exec);
         guard.as_ref().ok_or_else(|| "No active exec session".to_string())
             .and_then(|conn| conn.sftp_list(&path))
+    })
+}
+
+#[tauri::command]
+async fn sftp_search(state: State<'_, AppState>, session_id: String, path: String, query: String) -> Result<Vec<ssh_client::FileNode>, String> {
+    let exec = state.get_exec_conn(&session_id).ok_or("No exec session found")?;
+    tokio::task::block_in_place(|| {
+        let guard = lock_exec(&exec);
+        guard.as_ref().ok_or_else(|| "No active exec session".to_string())
+            .and_then(|conn| conn.sftp_search(&path, &query))
     })
 }
 
@@ -768,7 +995,22 @@ fn detect_ssh_config_path() -> ssh_config::DetectResult {
 #[tauri::command]
 fn parse_ssh_config(path: String) -> Result<Vec<ssh_config::parser::SshConfigEntry>, String> {
     let mut seen = Vec::new();
-    ssh_config::parser::parse_ssh_config(std::path::Path::new(&path), &mut seen)
+    let entries = ssh_config::parser::parse_ssh_config(std::path::Path::new(&path), &mut seen)?;
+    
+    // Filter out pure wildcard entries if that's all we have, or if we want to check for WG
+    if entries.iter().all(|e| e.is_wildcard && e.hostname.is_none()) {
+        if let Ok(Some(wg)) = ssh_config::wireguard::parse_wireguard_config(std::path::Path::new(&path)) {
+            let mut wg_entry = ssh_config::parser::SshConfigEntry::default();
+            wg_entry.host_patterns = vec![format!("WireGuard: {}", wg.endpoint)];
+            // Extract IP/Host from endpoint (host:port)
+            wg_entry.hostname = Some(wg.endpoint.split(':').next().unwrap_or(&wg.endpoint).to_string());
+            wg_entry.is_wireguard = true;
+            wg_entry.wg_config = Some(wg);
+            return Ok(vec![wg_entry]);
+        }
+    }
+    
+    Ok(entries)
 }
 
 #[tauri::command]
@@ -888,16 +1130,40 @@ async fn start_log_stream(
     password: Option<String>,
     private_key: Option<String>,
     proxy_jump: Option<String>,
+    profile_id: Option<String>,
 ) -> Result<(), String> {
-    // Determine OS from existing session if possible
-    let remote_os = state.get_exec_conn(&session_id)
+    // Determine OS and root-ness from the existing session if possible. On a
+    // non-root Unix login most system logs (journalctl, /var/log/*) are only
+    // readable by root, so we transparently elevate the stream command.
+    let (remote_os, is_root) = state.get_exec_conn(&session_id)
         .and_then(|exec| {
             let guard = lock_exec(&exec);
-            guard.as_ref().map(|c| c.remote_os)
+            guard.as_ref().map(|c| (c.remote_os, c.is_root))
         })
-        .unwrap_or(ssh_client::RemoteOs::Linux);
+        .unwrap_or((ssh_client::RemoteOs::Linux, false));
 
     tokio::task::block_in_place(|| {
+        // When streaming from a saved profile, resolve credentials server-side
+        // — profile connections never expose the keyring password to the UI,
+        // so a password/private_key passed in from the frontend for a profile
+        // session is always empty and would fail auth.
+        let (ip, user, port, password, private_key, proxy_jump, wg_mode, sudo_pw) = if let Some(pid) = &profile_id {
+            let mgr = ProfileManager::new(&app);
+            let profiles = mgr.load()?;
+            let profile = profiles.iter().find(|p| &p.id == pid).cloned()
+                .ok_or_else(|| "Profile not found".to_string())?;
+            let key_user = format!("profile:{}", profile.id);
+            let pw = profile_manager::get_password("servera", &key_user).ok();
+            let sudo_pw = profile_manager::get_password("servera-sudo", &key_user).ok();
+            (profile.ip, profile.user, profile.port, pw, profile.private_key_path, profile.proxy_jump, profile.wg_mode, sudo_pw)
+        } else {
+            (ip, user, port, password, private_key, proxy_jump, None, None)
+        };
+
+        let (dial_ip, dial_port, dial_jump) = wireguard::resolve_first_hop(
+            &app, &state.wireguard, &ip, port, proxy_jump.as_deref(), wg_mode.as_deref(),
+        )?;
+
         let command = if log_path == "__journalctl__" {
             match remote_os {
                 ssh_client::RemoteOs::Darwin => "log stream --style syslog".to_string(),
@@ -906,19 +1172,25 @@ async fn start_log_stream(
             }
         } else {
             match remote_os {
-                ssh_client::RemoteOs::Windows => format!("powershell -NoProfile -Command \"Get-Content -Path '{}' -Wait -Tail 20\"", log_path),
+                ssh_client::RemoteOs::Windows => format!("powershell -NoProfile -Command \"Get-Content -Path {} -Wait -Tail 20\"", ssh_client::ps_escape(&log_path)),
                 _ => format!("tail -f {} 2>/dev/null || echo 'Cannot stream'", log_path),
             }
         };
 
+        // Elevate log streaming on a non-root Unix login. Windows has no sudo
+        // model, so never elevate there.
+        let elevate = !is_root && remote_os != ssh_client::RemoteOs::Windows;
+
         let (session, channel) = ssh_client::open_stream_channel(
-            &ip, &user, port,
+            &dial_ip, &user, dial_port,
             password.as_deref(),
             private_key.as_deref(),
-            proxy_jump.as_deref(),
+            dial_jump.as_deref(),
             &command,
             &app,
             &session_id,
+            elevate,
+            sudo_pw.as_deref(),
         )?;
 
         let stop_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -977,23 +1249,54 @@ async fn create_tunnel(
     password: Option<String>,
     private_key: Option<String>,
     proxy_jump: Option<String>,
+    profile_id: Option<String>,
 ) -> Result<TunnelInfo, String> {
     tokio::task::block_in_place(|| {
+        // When opening a tunnel for a saved profile, resolve credentials
+        // server-side rather than trusting whatever the frontend has in
+        // memory — profile connections never expose the keyring password
+        // to the UI, so a password passed in for a profile session is
+        // always empty and would fail auth.
+        let (ip, user, port, password, private_key, proxy_jump, wg_mode) = if let Some(pid) = &profile_id {
+            let mgr = ProfileManager::new(&app);
+            let profiles = mgr.load()?;
+            let profile = profiles.iter().find(|p| &p.id == pid).cloned()
+                .ok_or_else(|| "Profile not found".to_string())?;
+            let key_user = format!("profile:{}", profile.id);
+            let pw = profile_manager::get_password("servera", &key_user).ok();
+            (profile.ip, profile.user, profile.port, pw, profile.private_key_path, profile.proxy_jump, profile.wg_mode)
+        } else {
+            (ip, user, port, password, private_key, proxy_jump, None)
+        };
+
+        let (dial_ip, dial_port, dial_jump) = wireguard::resolve_first_hop(
+            &app, &state.wireguard, &ip, port, proxy_jump.as_deref(), wg_mode.as_deref(),
+        )?;
+
         let tunnel = match tunnel_type.as_str() {
             "local" => {
                 let rh = remote_host.as_deref().unwrap_or("127.0.0.1");
                 let rp = remote_port.unwrap_or(80);
                 ssh_client::start_local_forward(
-                    &ip, &user, port,
-                    password.as_deref(), private_key.as_deref(), proxy_jump.as_deref(),
+                    &dial_ip, &user, dial_port,
+                    password.as_deref(), private_key.as_deref(), dial_jump.as_deref(),
                     local_port, rh, rp, &app, &session_id,
                 )?
             }
             "dynamic" => {
                 ssh_client::start_dynamic_forward(
-                    &ip, &user, port,
-                    password.as_deref(), private_key.as_deref(), proxy_jump.as_deref(),
+                    &dial_ip, &user, dial_port,
+                    password.as_deref(), private_key.as_deref(), dial_jump.as_deref(),
                     local_port, &app, &session_id,
+                )?
+            }
+            "remote" => {
+                let lh = remote_host.as_deref().unwrap_or("127.0.0.1");
+                let lp = remote_port.unwrap_or(80);
+                ssh_client::start_remote_forward(
+                    &dial_ip, &user, dial_port,
+                    password.as_deref(), private_key.as_deref(), dial_jump.as_deref(),
+                    local_port, lh, lp, &app, &session_id,
                 )?
             }
             _ => return Err(format!("Unknown tunnel type: {}", tunnel_type)),
@@ -1025,15 +1328,208 @@ fn close_tunnel(state: State<'_, AppState>, tunnel_id: String) -> Result<(), Str
 }
 
 #[tauri::command]
-fn list_tunnels(state: State<'_, AppState>) -> Vec<TunnelInfo> {
+fn get_active_tunnels(state: State<'_, AppState>) -> Vec<TunnelInfo> {
     let tunnels = state.tunnels.lock().unwrap_or_else(|p| p.into_inner());
-    tunnels.iter().map(|(id, t)| TunnelInfo {
+    let mut infos: Vec<TunnelInfo> = tunnels.iter().map(|(id, t)| TunnelInfo {
         id: id.clone(),
         tunnel_type: t.tunnel_type.clone(),
         local_port: t.local_port,
         remote_host: t.remote_host.clone(),
         remote_port: t.remote_port,
-    }).collect()
+    }).collect();
+    drop(tunnels);
+
+    // The WireGuard gateway shows up as a synthetic tunnel; the id embeds the
+    // endpoint host so profile-matching in the frontend works unchanged.
+    if let Some(status) = wireguard::get_status(&state.wireguard) {
+        let endpoint_host = status.endpoint.split(':').next().unwrap_or(&status.endpoint);
+        let endpoint_port = status.endpoint.split(':').nth(1).and_then(|p| p.parse().ok()).unwrap_or(51820);
+        infos.push(TunnelInfo {
+            id: format!("wg-{}", endpoint_host),
+            tunnel_type: "wireguard".to_string(),
+            local_port: 0,
+            remote_host: endpoint_host.to_string(),
+            remote_port: endpoint_port,
+        });
+    }
+    infos
+}
+
+#[tauri::command]
+async fn stop_all_tunnels(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    {
+        let mut tunnels = state.tunnels.lock().unwrap_or_else(|p| p.into_inner());
+        for (_, tunnel) in tunnels.drain() {
+            tunnel.stop_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    wireguard::stop_gateway(&app, &state.wireguard);
+    Ok(())
+}
+
+#[tauri::command]
+fn stop_wireguard_gateway(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    wireguard::stop_gateway(&app, &state.wireguard);
+    Ok(())
+}
+
+#[tauri::command]
+fn get_wireguard_status(state: State<'_, AppState>) -> Option<wireguard::WgStatusPayload> {
+    wireguard::get_status(&state.wireguard)
+}
+
+#[tauri::command]
+async fn start_gateway_from_profile(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    profile_id: String
+) -> Result<usize, String> {
+    // 1. Stop all existing tunnels first (Solo Mode)
+    let _ = stop_all_tunnels(app.clone(), state.clone()).await;
+
+    let mgr = ProfileManager::new(&app);
+    let profiles = mgr.load()?;
+    let profile = profiles.iter().find(|p| p.id == profile_id).cloned()
+        .ok_or_else(|| "Profile not found".to_string())?;
+
+    let mut started = 0;
+
+    // Handle WireGuard
+    if let Some(wg) = profile.wg_config.clone() {
+        let private_key = profile_manager::get_password("servera-wireguard", &profile.id)
+            .ok()
+            .or_else(|| wg.private_key.clone())
+            .ok_or_else(|| "No WireGuard private key stored for this gateway — re-import the .conf file".to_string())?;
+        let psk = profile_manager::get_password("servera-wireguard-psk", &profile.id).ok();
+
+        let mut wg = wg;
+        if psk.is_some() {
+            wg.preshared_key = psk;
+        }
+
+        let payload = tokio::task::block_in_place(|| {
+            wireguard::start_gateway(
+                &app,
+                &state.wireguard,
+                Some(profile.id.clone()),
+                &wg,
+                &private_key,
+                &profiles,
+            )
+        })?;
+        return Ok(payload.forwards.len().max(1));
+    }
+
+    // Handle SSH Tunnels
+    if let Some(tunnels) = profile.tunnels {
+        // Try to get password from keyring if needed
+        let key_user = format!("profile:{}", profile.id);
+        let password = crate::profile_manager::get_password("servera", &key_user).ok();
+
+        for fw in tunnels {
+            let tunnel_id = format!("saved-{}-{}", fw.local_port, profile.ip);
+            let tunnel_type = if fw.is_remote { "remote" } else { "local" };
+            
+            create_tunnel(
+                app.clone(),
+                state.clone(),
+                "gateway-saved".to_string(),
+                tunnel_id,
+                tunnel_type.to_string(),
+                fw.local_port,
+                Some(fw.remote_host),
+                Some(fw.remote_port),
+                profile.ip.clone(),
+                profile.user.clone(),
+                profile.port,
+                password.clone(),
+                profile.private_key_path.clone(),
+                profile.proxy_jump.clone(),
+                Some(profile.id.clone())
+            ).await?;
+            started += 1;
+        }
+    }
+
+    Ok(started)
+}
+
+#[tauri::command]
+async fn start_tunnels_from_entry(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    entry: ssh_config::parser::SshConfigEntry
+) -> Result<usize, String> {
+    let mut started = 0;
+
+    if entry.is_wireguard {
+        if let Some(wg) = entry.wg_config {
+            let private_key = wg.private_key.clone()
+                .ok_or_else(|| "The WireGuard config has no PrivateKey".to_string())?;
+            let seeds = ProfileManager::new(&app).load().unwrap_or_default();
+            let payload = tokio::task::block_in_place(|| {
+                wireguard::start_gateway(&app, &state.wireguard, None, &wg, &private_key, &seeds)
+            })?;
+            return Ok(payload.forwards.len().max(1));
+        }
+        return Ok(started);
+    }
+
+    let ip = entry.hostname.clone().ok_or("No hostname in entry")?;
+    let user = entry.user.clone().unwrap_or_else(|| "root".to_string());
+    let port = entry.port.unwrap_or(22);
+
+    for fw in entry.local_forwards {
+        create_tunnel(
+            app.clone(), state.clone(), "gateway-import".to_string(),
+            format!("auto-L-{}-{}", fw.local_port, ip), "local".to_string(),
+            fw.local_port, Some(fw.remote_host), Some(fw.remote_port),
+            ip.clone(), user.clone(), port, None, None, entry.proxy_jump.clone(), None
+        ).await?;
+        started += 1;
+    }
+
+    for fw in entry.remote_forwards {
+        create_tunnel(
+            app.clone(), state.clone(), "gateway-import".to_string(),
+            format!("auto-R-{}-{}", fw.remote_port, ip), "remote".to_string(),
+            fw.local_port, Some(fw.remote_host), Some(fw.remote_port),
+            ip.clone(), user.clone(), port, None, None, entry.proxy_jump.clone(), None
+        ).await?;
+        started += 1;
+    }
+
+    Ok(started)
+}
+
+/* =========================
+   VS CODE REMOTE COMMANDS
+   ========================= */
+
+#[tauri::command]
+fn check_vscode_cli() -> bool {
+    vscode_remote::check_vscode_cli()
+}
+
+#[tauri::command]
+fn ensure_remote_ssh_extension() -> Result<bool, String> {
+    vscode_remote::ensure_remote_ssh_extension()
+}
+
+#[tauri::command]
+fn ensure_ssh_config_host(app: AppHandle, profile_id: String) -> Result<String, String> {
+    let mgr = ProfileManager::new(&app);
+    let profiles = mgr.load()?;
+    let profile = profiles
+        .iter()
+        .find(|p| p.id == profile_id)
+        .ok_or_else(|| "Profile not found".to_string())?;
+    vscode_remote::ensure_ssh_config_host(profile)
+}
+
+#[tauri::command]
+fn open_vscode_remote(alias: String, path: String) -> Result<(), String> {
+    vscode_remote::open_vscode_remote(&alias, &path)
 }
 
 /* =========================
@@ -1083,24 +1579,49 @@ async fn fleet_run_command(
             let password = profile_manager::get_password("servera", &key_user).ok();
             let start = std::time::Instant::now();
 
+            let state = app_clone.state::<AppState>();
+            let (dial_ip, dial_port, dial_jump) = match wireguard::resolve_first_hop(
+                &app_clone,
+                &state.wireguard,
+                &profile.ip,
+                profile.port,
+                profile.proxy_jump.as_deref(),
+                profile.wg_mode.as_deref(),
+            ) {
+                Ok(resolved) => resolved,
+                Err(e) => return FleetResult {
+                    profile_id: profile.id.clone(),
+                    profile_name: if profile.name.is_empty() { format!("{}@{}", profile.user, profile.ip) } else { profile.name.clone() },
+                    host: format!("{}@{}:{}", profile.user, profile.ip, profile.port),
+                    output: format!("Connection failed: {}", e),
+                    success: false,
+                    duration_ms: start.elapsed().as_millis() as u64,
+                },
+            };
+
             let session_id = format!("fleet-{}", uuid::Uuid::new_v4());
             match SshExecConn::connect(
-                &profile.ip, &profile.user, profile.port,
+                &dial_ip, &profile.user, dial_port,
                 password.as_deref(),
                 profile.private_key_path.as_deref(),
-                profile.proxy_jump.as_deref(),
+                dial_jump.as_deref(),
                 &app_clone,
                 &session_id,
                 None,
             ) {
                 Ok(conn) => {
-                    let output = conn.exec_command(&cmd).unwrap_or_else(|e| e);
+                    // Report the real command outcome instead of a blanket
+                    // success — a command that failed on a host now shows red.
+                    let (output, success) = match conn.exec_command(&cmd) {
+                        Ok(out) => (out, true),
+                        Err(e) => (e, false),
+                    };
                     FleetResult {
                         profile_id: profile.id.clone(),
                         profile_name: if profile.name.is_empty() { format!("{}@{}", profile.user, profile.ip) } else { profile.name.clone() },
                         host: format!("{}@{}:{}", profile.user, profile.ip, profile.port),
                         output,
-                        success: true,
+                        success,
                         duration_ms: start.elapsed().as_millis() as u64,
                     }
                 }
@@ -1146,15 +1667,20 @@ fn main() {
             start_ssh_session,
             send_ssh_input,
             close_ssh_session,
+            disconnect_all,
             resize_terminal,
             exec_ssh_command,
+            exec_ssh_command_sudo,
             // Profiles
             save_profile,
+            has_sudo_password,
             load_profiles,
             delete_profile,
+            set_profile_default_path,
             connect_to_profile,
             // SFTP
             sftp_list,
+            sftp_search,
             sftp_read,
             sftp_write,
             sftp_write_sudo,
@@ -1198,6 +1724,8 @@ fn main() {
             parse_ssh_config,
             import_ssh_profiles,
             resolve_mfa_response,
+            resolve_host_key_response,
+            forget_known_host,
             // OS-Specific
             get_system_metadata,
             get_package_updates,
@@ -1209,10 +1737,27 @@ fn main() {
             // Tunnels
             create_tunnel,
             close_tunnel,
-            list_tunnels,
+            get_active_tunnels,
+            stop_all_tunnels,
+            start_tunnels_from_entry,
+            start_gateway_from_profile,
+            // WireGuard
+            stop_wireguard_gateway,
+            get_wireguard_status,
+            // VS Code Remote
+            check_vscode_cli,
+            ensure_remote_ssh_extension,
+            ensure_ssh_config_host,
+            open_vscode_remote,
             // Fleet Orchestration
             fleet_run_command,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::Exit = event {
+                let state = app_handle.state::<AppState>();
+                wireguard::stop_gateway(app_handle, &state.wireguard);
+            }
+        });
 }

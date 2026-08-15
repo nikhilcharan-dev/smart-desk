@@ -1,12 +1,22 @@
 import "./styles.css";
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { MAIN_SESSION_ID } from "../../utils/terminal";
 import logo from "../../assets/logo-32.png";
 import ImportWizard from "../../components/Onboarding/ImportWizard";
 import Modal from "../../components/Common/Modal";
-import { Download, Plus, Server, Pencil, Trash2, Key, Lock, ShieldCheck, Waypoints, Globe, User, Hash, Tag, LayoutList, LayoutGrid, Monitor, Laptop } from "lucide-react";
+import { Download, Plus, Server, Pencil, Trash2, Key, Lock, ShieldCheck, Waypoints, Globe, User, Hash, Tag, LayoutList, LayoutGrid, Monitor, Laptop, ChevronRight, Shield } from "lucide-react";
+
+const WG_STATUS_LABELS = {
+    starting: "Starting…",
+    running: "Connected (waiting for traffic)",
+    active: "Active",
+    restarting: "Restarting…",
+    stopped: "Stopped",
+    error: "Error",
+};
 
 /* ───────── SSH Key Card (inline) ───────── */
 
@@ -65,6 +75,14 @@ function LabeledInput({ icon: Icon, label, children }) {
     );
 }
 
+/* ───────── OS Icon (profile avatar glyph) ───────── */
+
+function OsIcon({ os, size = 16 }) {
+    if (os === "windows") return <Monitor size={size} />;
+    if (os === "darwin") return <Laptop size={size} />;
+    return <Server size={size} />;
+}
+
 /* ───────── Color Picker (for profiles) ───────── */
 
 const PROFILE_COLORS = ["#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#06b6d4", "#84cc16"];
@@ -87,7 +105,7 @@ function ColorPicker({ value, onChange }) {
 
 /* ───────── Main Component ───────── */
 
-export default function ConnectionHub({ isEntering, setConnected, setUser: setGlobalUser, setIp: setGlobalIp, setProfileName, setHostFingerprint, user, ip, setIsConnecting, setProfileId }) {
+export default function ConnectionHub({ isEntering, setConnected, setUser: setGlobalUser, setIp: setGlobalIp, setProfileName, setHostFingerprint, user, ip, setIsConnecting, setProfileId, setConnPort, setConnPassword, setConnPrivateKey, setConnProxyJump }) {
     const [activeTab, setActiveTab] = useState("profiles");
     const [profiles, setProfiles] = useState([]);
     const [isEditing, setIsEditing] = useState(false);
@@ -95,7 +113,11 @@ export default function ConnectionHub({ isEntering, setConnected, setUser: setGl
     const [error, setError] = useState("");
     const [authMode, setAuthMode] = useState("password"); // password | key | agent
     const [showImportWizard, setShowImportWizard] = useState(false);
-    const [viewMode, setViewMode] = useState(() => localStorage.getItem("profileViewMode") || "grid");
+    const [viewMode, setViewMode] = useState(() => localStorage.getItem('profileViewMode') || "grid");
+    const [tunnels, setTunnels] = useState([]);
+    const [wizardMode, setWizardMode] = useState("import"); // import | gateway
+    const [preSelectedPath, setPreSelectedPath] = useState(null);
+    const [wgStatus, setWgStatus] = useState(null); // live WireGuard gateway status from the backend
 
     const [formData, setFormData] = useState({
         id: "",
@@ -104,16 +126,94 @@ export default function ConnectionHub({ isEntering, setConnected, setUser: setGl
         user: user || "",
         port: "22",
         password: "",
+        sudo_password: "",
         private_key_path: "",
         proxy_jump: "",
+        wg_mode: "auto",
         color: "#3b82f6"
     });
+    // Whether the profile being edited already has a sudo password in the keyring
+    const [sudoIsSet, setSudoIsSet] = useState(false);
 
     useEffect(() => { loadProfiles(); }, []);
+ 
+    useEffect(() => {
+        // Initial snapshot only. Live updates arrive via the backend-pushed
+        // "tunnel-status" event below, and local mutations reload explicitly —
+        // so there's no need to poll get_active_tunnels/get_wireguard_status.
+        loadTunnels();
+        loadWgStatus();
+    }, []);
+
+    // Live WireGuard status pushed from the backend (starting/active/restarting/etc.)
+    useEffect(() => {
+        let unlisten;
+        listen("tunnel-status", (e) => {
+            if (e.payload?.type === "wireguard") {
+                setWgStatus(e.payload.status === "stopped" ? null : e.payload);
+                loadTunnels();
+            }
+        }).then(fn => (unlisten = fn));
+        return () => { if (unlisten) unlisten(); };
+    }, []);
+
+    const loadTunnels = async () => {
+        try {
+            const data = await invoke("get_active_tunnels");
+            setTunnels(data);
+        } catch (err) {
+            console.error("Failed to load tunnels:", err);
+        }
+    };
+
+    const loadWgStatus = async () => {
+        try {
+            const status = await invoke("get_wireguard_status");
+            setWgStatus(status);
+        } catch (err) {
+            console.error("Failed to load WireGuard status:", err);
+        }
+    };
+
+    const handleStopTunnel = async (tunnelId) => {
+        try {
+            await invoke("close_tunnel", { tunnelId });
+            loadTunnels();
+        } catch (err) {
+            setError(String(err));
+        }
+    };
+
+    const handleImportGateway = async () => {
+        try {
+            const selected = await open({
+                multiple: false,
+                directory: false,
+                filters: [{ name: "SSH Config", extensions: ["conf", "config", "*"] }]
+            });
+            if (selected) {
+                setPreSelectedPath(selected);
+                setWizardMode("gateway");
+                setShowImportWizard(true);
+            }
+        } catch (err) {
+            console.error(err);
+        }
+    };
+
+    const handleOpenImport = () => {
+        setPreSelectedPath(null);
+        setWizardMode("import");
+        setShowImportWizard(true);
+    };
 
     useEffect(() => {
+        // Re-derive authMode only when switching profiles, not on every
+        // keystroke — otherwise this would fight the user's manual
+        // password/key/agent toggle while editing the form.
         if (formData.private_key_path) setAuthMode("key");
         else setAuthMode("password");
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [formData.id]);
 
     const loadProfiles = async () => {
@@ -129,10 +229,6 @@ export default function ConnectionHub({ isEntering, setConnected, setUser: setGl
 
     const handleConnect = async (e) => {
         e.preventDefault();
-        if (!navigator.onLine) {
-            alert("No internet connection. Please enable internet connection to proceed with SSH.");
-            return;
-        }
 
         setError("");
         setIsLoading(true);
@@ -144,17 +240,22 @@ export default function ConnectionHub({ isEntering, setConnected, setUser: setGl
                 user: formData.user,
                 port: Number(formData.port) || 22,
                 password: authMode === "password" ? (formData.password || null) : null,
-                private_key: authMode === "key" ? (formData.private_key_path || null) : null,
-                proxy_jump: formData.proxy_jump || null
+                privateKey: authMode === "key" ? (formData.private_key_path || null) : null,
+                proxyJump: formData.proxy_jump || null
             });
             if (setHostFingerprint) setHostFingerprint(fingerprint || "");
             setGlobalUser(formData.user);
             setGlobalIp(formData.ip);
             setProfileName("Quick Connect");
             if (setProfileId) setProfileId(null);
+            if (setConnPort) setConnPort(Number(formData.port) || 22);
+            if (setConnPassword) setConnPassword(authMode === "password" ? formData.password : "");
+            if (setConnPrivateKey) setConnPrivateKey(authMode === "key" ? formData.private_key_path : "");
+            if (setConnProxyJump) setConnProxyJump(formData.proxy_jump || "");
             setConnected(true);
         } catch (err) {
-            setError(String(err));
+            const hint = !navigator.onLine ? " (your machine reports no network connection)" : "";
+            setError(String(err) + hint);
         } finally {
             setIsLoading(false);
             setIsConnecting(false);
@@ -162,11 +263,6 @@ export default function ConnectionHub({ isEntering, setConnected, setUser: setGl
     };
 
     const handleProfileConnect = async (profile) => {
-        if (!navigator.onLine) {
-            alert("No internet connection. Please enable internet connection to proceed with SSH.");
-            return;
-        }
-
         setError("");
         setIsLoading(true);
         setIsConnecting(true);
@@ -177,9 +273,16 @@ export default function ConnectionHub({ isEntering, setConnected, setUser: setGl
             setGlobalIp(profile.ip);
             setProfileName(profile.name);
             if (setProfileId) setProfileId(profile.id);
+            if (setConnPort) setConnPort(profile.port || 22);
+            // The password lives only in the OS keyring on the backend — not
+            // available here for profile connections (unlike Quick Connect).
+            if (setConnPassword) setConnPassword("");
+            if (setConnPrivateKey) setConnPrivateKey(profile.private_key_path || "");
+            if (setConnProxyJump) setConnProxyJump(profile.proxy_jump || "");
             setConnected(true);
         } catch (err) {
-            setError(String(err));
+            const hint = !navigator.onLine ? " (your machine reports no network connection)" : "";
+            setError(String(err) + hint);
         } finally {
             setIsLoading(false);
             setIsConnecting(false);
@@ -192,19 +295,29 @@ export default function ConnectionHub({ isEntering, setConnected, setUser: setGl
         if (!formData.ip) { setError("Host / IP address is required"); return; }
         if (!formData.user) { setError("Username is required"); return; }
         try {
+            // Spread formData rather than rebuilding from a fixed field list —
+            // fields the form doesn't own (wg_config, tunnels, remote_os) must
+            // survive an edit unchanged, or editing a gateway profile silently
+            // wipes its WireGuard config and orphans its keyring entries.
             const profile = {
+                ...formData,
                 id: formData.id || crypto.randomUUID(),
-                name: formData.name,
-                ip: formData.ip,
-                user: formData.user,
                 port: Number(formData.port) || 22,
                 private_key_path: authMode === "key" ? (formData.private_key_path || null) : null,
                 tags: formData.tags || [],
                 color: formData.color || "#3b82f6",
                 last_connected: formData.last_connected || null,
-                proxy_jump: formData.proxy_jump || null
+                proxy_jump: formData.proxy_jump || null,
+                wg_mode: formData.wg_mode && formData.wg_mode !== "auto" ? formData.wg_mode : null
             };
-            await invoke("save_profile", { profile, password: authMode === "password" ? (formData.password || null) : null });
+            delete profile.password;
+            delete profile.sudo_password;
+            await invoke("save_profile", {
+                profile,
+                password: authMode === "password" ? (formData.password || null) : null,
+                // Empty means "unchanged" on edit; a typed value sets/updates it.
+                sudoPassword: formData.sudo_password || null,
+            });
             setIsEditing(false);
             resetForm();
             loadProfiles();
@@ -226,13 +339,17 @@ export default function ConnectionHub({ isEntering, setConnected, setUser: setGl
 
     const openEdit = (e, profile) => {
         e.stopPropagation();
-        setFormData({ ...profile, port: String(profile.port || 22), password: "", proxy_jump: profile.proxy_jump || "", color: profile.color || "#3b82f6" });
+        setFormData({ ...profile, port: String(profile.port || 22), password: "", sudo_password: "", proxy_jump: profile.proxy_jump || "", wg_mode: profile.wg_mode || "auto", color: profile.color || "#3b82f6" });
         setIsEditing(true);
+        // Reflect whether a sudo password is already stored (value stays hidden).
+        setSudoIsSet(false);
+        invoke("has_sudo_password", { id: profile.id }).then(setSudoIsSet).catch(() => setSudoIsSet(false));
     };
 
     const resetForm = () => {
-        setFormData({ id: "", name: "", ip: "", user: "", port: "22", password: "", private_key_path: "", proxy_jump: "", color: "#3b82f6" });
+        setFormData({ id: "", name: "", ip: "", user: "", port: "22", password: "", sudo_password: "", private_key_path: "", proxy_jump: "", wg_mode: "auto", color: "#3b82f6" });
         setAuthMode("password");
+        setSudoIsSet(false);
         setError("");
     };
 
@@ -372,6 +489,22 @@ export default function ConnectionHub({ isEntering, setConnected, setUser: setGl
                             </div>
                         </div>
                     )}
+
+                    {/* Sudo password — optional. Lets Servera elevate commands
+                        (view root-only logs, edit protected files) when you log
+                        in as a non-root user whose sudo needs a password. */}
+                    <LabeledInput icon={Shield} label="Sudo password (optional)">
+                        <input
+                            type="password"
+                            placeholder={sudoIsSet ? "Stored — leave empty to keep" : "For non-root logins that need sudo"}
+                            value={formData.sudo_password}
+                            onChange={e => set("sudo_password", e.target.value)}
+                            autoComplete="off"
+                        />
+                    </LabeledInput>
+                    <div className="agent-info-desc" style={{ marginTop: 6, fontSize: 11, opacity: 0.7 }}>
+                        Stored securely in your OS keyring. Used to run privileged commands via sudo and to read protected logs.
+                    </div>
                 </div>
 
                 {/* Advanced */}
@@ -388,6 +521,15 @@ export default function ConnectionHub({ isEntering, setConnected, setUser: setGl
                             spellCheck={false}
                         />
                     </LabeledInput>
+                    {isEditing && (
+                        <LabeledInput icon={Shield} label="VPN Routing">
+                            <select value={formData.wg_mode || "auto"} onChange={e => set("wg_mode", e.target.value)}>
+                                <option value="auto">Auto (route when IP matches active gateway)</option>
+                                <option value="always">Always via WireGuard gateway</option>
+                                <option value="never">Never (direct connection)</option>
+                            </select>
+                        </LabeledInput>
+                    )}
                 </div>
 
                 {error && <div className="error-text">{error}</div>}
@@ -430,6 +572,11 @@ export default function ConnectionHub({ isEntering, setConnected, setUser: setGl
                         <Server size={14} />
                         Profiles
                     </button>
+                    <button className={`tab-btn ${activeTab === "gateways" && !isEditing ? "active" : ""}`}
+                        onClick={() => { setActiveTab("gateways"); setIsEditing(false); setError(""); }}>
+                        <Waypoints size={14} />
+                        Gateways
+                    </button>
                     <button className={`tab-btn ${activeTab === "quick" && !isEditing ? "active" : ""}`} onClick={switchToQuick}>
                         <Globe size={14} />
                         Quick Connect
@@ -443,11 +590,13 @@ export default function ConnectionHub({ isEntering, setConnected, setUser: setGl
                 </div>
 
                 {/* PROFILES */}
-                {activeTab === "profiles" && !isEditing && (
+                {activeTab === "profiles" && !isEditing && (() => {
+                    const regularProfiles = profiles.filter(p => !p.tags?.includes("gateway"));
+                    return (
                     <div className="profiles-view">
                         {/* Toolbar: count + view toggle */}
                         <div className="profiles-toolbar">
-                            <span className="profiles-count">{profiles.length} server{profiles.length !== 1 ? 's' : ''}</span>
+                            <span className="profiles-count">{regularProfiles.length} server{regularProfiles.length !== 1 ? 's' : ''}</span>
                             <div className="view-toggle">
                                 <button
                                     className={`view-toggle-btn ${viewMode === 'list' ? 'active' : ''}`}
@@ -467,14 +616,14 @@ export default function ConnectionHub({ isEntering, setConnected, setUser: setGl
                         </div>
 
                         <div className={`profiles-list ${viewMode === 'grid' ? 'profiles-grid' : ''}`}>
-                            {profiles.length === 0 && (
+                            {regularProfiles.length === 0 && (
                                 <div className="empty-state">
                                     <Server size={28} strokeWidth={1.2} />
                                     <span>No profiles yet</span>
                                     <span className="empty-hint">Add a profile or import from ~/.ssh/config</span>
                                 </div>
                             )}
-                            {profiles.map((p, idx) => (
+                            {regularProfiles.map((p, idx) => (
                                 viewMode === 'grid' ? (
                                     /* ─── Grid Tile ─── */
                                     <div
@@ -483,19 +632,6 @@ export default function ConnectionHub({ isEntering, setConnected, setUser: setGl
                                         style={isEntering ? { "--item-idx": idx } : undefined}
                                         onClick={() => handleProfileConnect(p)}
                                     >
-                                        <div className="tile-accent" style={{ background: p.color || "#3b82f6" }} />
-                                        <div className="tile-body">
-                                            <div className="tile-title-row">
-                                                <div className="tile-name">{p.name}</div>
-                                                {p.remote_os && (
-                                                    <div className="tile-os-icon" title={p.remote_os}>
-                                                        {p.remote_os === 'windows' ? <Monitor size={10} /> : p.remote_os === 'darwin' ? <Laptop size={10} /> : <Server size={10} />}
-                                                    </div>
-                                                )}
-                                            </div>
-                                            <div className="tile-host">{p.ip}</div>
-                                            <div className="tile-user">{p.user}<span className="tile-port">:{p.port || 22}</span></div>
-                                        </div>
                                         <div className="tile-actions">
                                             <button className="icon-btn" onClick={(e) => openEdit(e, p)} title="Edit">
                                                 <Pencil size={11} />
@@ -504,6 +640,12 @@ export default function ConnectionHub({ isEntering, setConnected, setUser: setGl
                                                 <Trash2 size={11} />
                                             </button>
                                         </div>
+                                        <div className="tile-avatar" style={{ "--pc": p.color || "#3b82f6" }} title={p.remote_os || "linux"}>
+                                            <OsIcon os={p.remote_os} size={18} />
+                                        </div>
+                                        <div className="tile-name" title={p.name}>{p.name}</div>
+                                        <div className="tile-host">{p.ip}<span className="tile-port">:{p.port || 22}</span></div>
+                                        <div className="tile-user">{p.user}</div>
                                     </div>
                                 ) : (
                                     /* ─── List Row ─── */
@@ -513,16 +655,11 @@ export default function ConnectionHub({ isEntering, setConnected, setUser: setGl
                                         style={isEntering ? { "--item-idx": idx } : undefined}
                                         onClick={() => handleProfileConnect(p)}
                                     >
-                                        <div className="profile-dot" style={{ background: p.color || "#3b82f6" }} />
+                                        <div className="profile-avatar" style={{ "--pc": p.color || "#3b82f6" }} title={p.remote_os || "linux"}>
+                                            <OsIcon os={p.remote_os} size={16} />
+                                        </div>
                                         <div className="profile-info">
-                                            <div className="profile-title-line">
-                                                <span className="profile-name">{p.name}</span>
-                                                {p.remote_os && (
-                                                    <div className="profile-os-badge" title={p.remote_os}>
-                                                        {p.remote_os === 'windows' ? <Monitor size={10} /> : p.remote_os === 'darwin' ? <Laptop size={10} /> : <Server size={10} />}
-                                                    </div>
-                                                )}
-                                            </div>
+                                            <span className="profile-name" title={p.name}>{p.name}</span>
                                             <span className="profile-sub">
                                                 {p.user}@{p.ip}<span className="profile-port">:{p.port || 22}</span>
                                             </span>
@@ -535,6 +672,7 @@ export default function ConnectionHub({ isEntering, setConnected, setUser: setGl
                                                 <Trash2 size={13} />
                                             </button>
                                         </div>
+                                        <ChevronRight className="profile-chevron" size={16} />
                                     </div>
                                 )
                             ))}
@@ -547,12 +685,112 @@ export default function ConnectionHub({ isEntering, setConnected, setUser: setGl
                                 <Plus size={15} />
                                 New Profile
                             </button>
-                            <button className="import-btn" title="Import from ~/.ssh/config" onClick={() => setShowImportWizard(true)}>
+                            <button className="import-btn" title="Import from ~/.ssh/config" onClick={handleOpenImport}>
                                 <Download size={14} />
                                 Import
                             </button>
                         </div>
                         {error && <div className="error-text">{error}</div>}
+                    </div>
+                    );
+                })()}
+
+                {/* GATEWAYS */}
+                {activeTab === "gateways" && !isEditing && (
+                    <div className="gateways-view">
+                        <div className="gateways-header">
+                            <h3>Pre-connection Tunnels</h3>
+                            <p>Establish a tunnel to your bastion or gateway server to access private IP profiles.</p>
+                        </div>
+
+                        <div className="tunnels-status-list">
+                            {tunnels.length === 0 && profiles.filter(p => p.tags?.includes("gateway")).length === 0 ? (
+                                <div className="empty-state">
+                                    <Waypoints size={28} strokeWidth={1.2} />
+                                    <span>No active gateways</span>
+                                    <span className="empty-hint">Start a tunnel to access private network profiles</span>
+                                </div>
+                            ) : (
+                                <>
+                                    {/* 1. Show saved gateways (Active or Offline) */}
+                                    {profiles.filter(p => p.tags?.includes("gateway")).map(p => {
+                                        const isActive = tunnels.some(t => t.id.includes(p.ip));
+                                        const isWg = !!p.wg_config;
+                                        const wgLive = isWg && wgStatus?.profileId === p.id ? wgStatus : null;
+                                        const statusLabel = wgLive
+                                            ? (WG_STATUS_LABELS[wgLive.status] || wgLive.status)
+                                            : (isActive ? "ACTIVE" : "SAVED");
+                                        const isErrored = wgLive?.status === "error";
+                                        return (
+                                            <div key={p.id} className={`gateway-status-item ${isActive ? 'active' : 'saved'}`}>
+                                                <div className={`gateway-dot ${isErrored ? 'offline' : isActive ? 'local' : 'offline'}`}></div>
+                                                <div className="gateway-info">
+                                                    <div className="gateway-label">
+                                                        {p.name}
+                                                        <span className={`status-tag ${isActive && !isErrored ? '' : 'saved'}`}>
+                                                            {statusLabel}
+                                                        </span>
+                                                    </div>
+                                                    <div className="gateway-detail">
+                                                        {p.wg_config ? `WireGuard: ${p.wg_config.endpoint}` : `SSH Gateway: ${p.ip}`}
+                                                        {wgLive?.message ? ` — ${wgLive.message}` : ""}
+                                                    </div>
+                                                </div>
+                                                {isActive ? (
+                                                    <button className="gateway-stop-btn" onClick={async () => {
+                                                        try {
+                                                            await invoke("stop_all_tunnels");
+                                                            loadTunnels();
+                                                            loadWgStatus();
+                                                        } catch (err) {
+                                                            setError("Failed to stop gateway: " + err);
+                                                        }
+                                                    }}>Stop</button>
+                                                ) : (
+                                                    <button className="gateway-start-btn" onClick={async () => {
+                                                        try {
+                                                            await invoke("start_gateway_from_profile", { profileId: p.id });
+                                                            loadTunnels();
+                                                            loadWgStatus();
+                                                        } catch (err) {
+                                                            setError("Failed to start gateway: " + err);
+                                                        }
+                                                    }}>Start</button>
+                                                )}
+                                            </div>
+                                        );
+                                    })}
+
+                                    {/* 2. Show "Manual" tunnels (not associated with any profile) */}
+                                    {tunnels.filter(t => !profiles.some(p => t.id.includes(p.ip))).map(t => (
+                                        <div key={t.id} className="gateway-status-item active">
+                                            <div className={`gateway-dot ${t.tunnel_type}`}></div>
+                                            <div className="gateway-info">
+                                                <div className="gateway-label">
+                                                    {t.tunnel_type === "remote" ? "Remote Forward" : t.tunnel_type === "dynamic" ? "SOCKS Proxy" : "Local Tunnel"}
+                                                    <span className="status-tag">MANUAL</span>
+                                                </div>
+                                                <div className="gateway-detail">
+                                                    {t.tunnel_type === "dynamic" ? `Port ${t.local_port}` : `${t.local_port} → ${t.remote_host}:${t.remote_port}`}
+                                                </div>
+                                            </div>
+                                            <button className="gateway-stop-btn" onClick={() => handleStopTunnel(t.id)}>Stop</button>
+                                        </div>
+                                    ))}
+                                </>
+                            )}
+                        </div>
+
+                        <div className="gateways-actions">
+                            <button className="primary-btn" onClick={handleImportGateway}>
+                                <Download size={15} />
+                                Start from .conf File
+                            </button>
+                            <button className="secondary-btn" onClick={() => setActiveTab("quick")}>
+                                <Plus size={15} />
+                                Manual Tunnel
+                            </button>
+                        </div>
                     </div>
                 )}
 
@@ -562,15 +800,24 @@ export default function ConnectionHub({ isEntering, setConnected, setUser: setGl
 
             <Modal
                 isOpen={showImportWizard}
-                title="SSH Config Import"
+                type="custom"
+                title={wizardMode === "gateway" ? "Establish Gateway Tunnels" : "SSH Config Import"}
                 onCancel={() => setShowImportWizard(false)}
                 footer={null}
                 actions={[]}
             >
                 <ImportWizard
+                    mode={wizardMode}
+                    initialPath={preSelectedPath}
                     onComplete={() => {
                         setShowImportWizard(false);
-                        loadProfiles();
+                        setPreSelectedPath(null);
+                        if (wizardMode === "gateway") {
+                            loadTunnels();
+                            setActiveTab("gateways");
+                        } else {
+                            loadProfiles();
+                        }
                     }}
                     onCancel={() => setShowImportWizard(false)}
                 />

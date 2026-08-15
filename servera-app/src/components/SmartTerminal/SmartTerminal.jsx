@@ -6,7 +6,7 @@ import {
     CheckCircle2, Circle, AlertCircle, Play, StopCircle,
     Pencil, Trash2, ChevronRight, Bot, Columns2,
     PlusCircle, MessageSquare, History, PanelLeftClose, PanelLeftOpen,
-    Palette, Check
+    Palette, Check, Code2, ArrowRightLeft, Cloud, Plus
 } from "lucide-react";
 import { MAIN_SESSION_ID } from "../../utils/terminal";
 import "./SmartTerminal.css";
@@ -17,33 +17,103 @@ import "./SmartTerminal.css";
 
 /**
  * Parse AI output into a structured command plan.
- * Expected format: `N. \`command\` - description`
- * Falls back to extracting ```bash blocks.
+ * Strategy:
+ *   1. Try strict format: `N. \`command\` - description`
+ *   2. Fallback: numbered lines with backtick-wrapped commands (no dash separator)
+ *   3. Fallback: extract ```bash code blocks
+ * Sanitises extracted commands by stripping comments/explanations that
+ * the LLM occasionally leaks inside backticks.
  */
+function sanitizeCommand(raw) {
+    // Strip leading/trailing whitespace
+    let cmd = raw.trim();
+    // Remove inline comments the LLM sometimes appends (e.g. "apt update # updates packages")
+    // But keep comments that are part of real shell syntax (heredocs, sed, etc.)
+    // Simple heuristic: only strip if the comment looks like natural language
+    cmd = cmd.replace(/\s+#\s+[A-Z][a-z].*$/gm, '');
+    // Remove leading "Run: " or "Execute: " prefixes
+    cmd = cmd.replace(/^(?:Run|Execute|Then|Next|First|Finally)[:\s]+/i, '');
+    // Remove wrapping backticks if the LLM double-wrapped
+    cmd = cmd.replace(/^`+|`+$/g, '');
+    return cmd.trim();
+}
+
 function parsePlan(content) {
-    const planRegex = /^\d+\.\s+`([^`]+)`\s*[-–—]\s*(.+)$/gm;
     const commands = [];
     let match;
-    while ((match = planRegex.exec(content)) !== null) {
-        commands.push({
-            text: match[1].trim(),
-            description: match[2].trim(),
-            status: "pending",
-            enabled: true,
-            editing: false,
-            exitCode: null,
-            duration: null,
-        });
+
+    // Strategy 0: ```opsplan fenced JSON block — the primary, most reliable
+    // format (see the system prompt). Falls through to the regex-based
+    // strategies below if the model didn't follow it or emitted malformed JSON.
+    const opsplanMatch = /```opsplan\s*\n([\s\S]*?)```/.exec(content);
+    if (opsplanMatch) {
+        try {
+            const parsed = JSON.parse(opsplanMatch[1].trim());
+            if (Array.isArray(parsed)) {
+                const jsonCommands = parsed
+                    .filter(item => item && typeof item.command === "string" && item.command.trim())
+                    .map(item => ({
+                        text: sanitizeCommand(item.command),
+                        description: typeof item.description === "string" ? item.description.trim() : "",
+                        status: "pending",
+                        enabled: true,
+                        editing: false,
+                        exitCode: null,
+                        duration: null,
+                    }));
+                if (jsonCommands.length > 0) return jsonCommands;
+            }
+        } catch {
+            // Malformed JSON — fall through to the regex-based strategies.
+        }
+    }
+
+    // Strategy 1: Strict format — N. `command` - description
+    const strictRegex = /^\d+\.\s+`([^`]+)`\s*[-–—]\s*(.+)$/gm;
+    while ((match = strictRegex.exec(content)) !== null) {
+        const cmd = sanitizeCommand(match[1]);
+        if (cmd) {
+            commands.push({
+                text: cmd,
+                description: match[2].trim(),
+                status: "pending",
+                enabled: true,
+                editing: false,
+                exitCode: null,
+                duration: null,
+            });
+        }
     }
     if (commands.length > 0) return commands;
 
-    // Fallback: extract ```bash blocks
+    // Strategy 2: Numbered list with backtick commands but no dash
+    // e.g. "1. `apt update`" or "1. `apt update` updates the package list"
+    const looseRegex = /^\d+\.\s+`([^`]+)`(?:\s*[-–—]?\s*(.*))?$/gm;
+    while ((match = looseRegex.exec(content)) !== null) {
+        const cmd = sanitizeCommand(match[1]);
+        if (cmd) {
+            commands.push({
+                text: cmd,
+                description: (match[2] || "").trim(),
+                status: "pending",
+                enabled: true,
+                editing: false,
+                exitCode: null,
+                duration: null,
+            });
+        }
+    }
+    if (commands.length > 0) return commands;
+
+    // Strategy 3: Extract ```bash code blocks.
+    // Treat each block as ONE command, not one-per-line — a block may be a
+    // single multi-line script (loop, if/else, heredoc) that splitting would shred.
     const bashRegex = /```(?:bash|sh)?\s*\n([\s\S]*?)```/g;
     while ((match = bashRegex.exec(content)) !== null) {
-        const code = match[1].trim();
-        if (code) {
+        const block = match[1].trim();
+        if (block) {
             commands.push({
-                text: code,
+                text: sanitizeCommand(block),
                 description: "",
                 status: "pending",
                 enabled: true,
@@ -55,6 +125,17 @@ function parsePlan(content) {
     }
     return commands.length > 0 ? commands : null;
 }
+
+/* ──────────────────────────────────
+   EXECUTION TIMEOUTS
+   ────────────────────────────────── */
+
+// A running command is judged by silence, not by elapsed time: as long as it
+// keeps printing to the PTY it may run as long as it likes. Only this much
+// output-free time counts as a stall.
+const STALL_IDLE_MS = 10 * 60 * 1000;
+// Absolute ceiling so a chain can never poll forever.
+const HARD_TIMEOUT_MS = 6 * 60 * 60 * 1000;
 
 /* ──────────────────────────────────
    THEMES
@@ -73,7 +154,18 @@ const THEMES = [
    SMART TERMINAL COMPONENT
    ────────────────────────────────── */
 
-export default function SmartTerminal({ xtermRef, onClose, layout, onLayoutChange }) {
+export default function SmartTerminal({
+    xtermRef, onClose, layout, onLayoutChange,
+    ip, user, port, password, privateKey, proxyJump, profileId,
+    onOpenCloudBrowser,
+}) {
+    // OpsPilot conversations store real command output from the connected host,
+    // so they are scoped per connection the same way LogViewer scopes its tabs.
+    // A single global key meant the previous VM's outputs reappeared after
+    // logging out and connecting somewhere else.
+    const sessionsKey = profileId ? `opspilot_sessions:profile:${profileId}` : `opspilot_sessions:${user}@${ip}`;
+    const activeSessionKey = `${sessionsKey}:active`;
+
     // Core state
     const [prompt, setPrompt] = useState("");
     const [timeline, setTimeline] = useState([]); // Array of timeline entries
@@ -86,8 +178,18 @@ export default function SmartTerminal({ xtermRef, onClose, layout, onLayoutChang
     // eslint-disable-next-line no-unused-vars
     const [executingCmdIdx, setExecutingCmdIdx] = useState(-1);
     const chainRef = useRef(false);
+    const executeCommandAtRef = useRef(null);
     const retryCountRef = useRef(0);
+    // Timestamp of the last byte seen on the PTY. The exit-code poller uses this
+    // instead of a fixed wall-clock budget so a genuinely long build/install is
+    // never mistaken for a hang.
+    const lastOutputAtRef = useRef(Date.now());
+    const timelineRef = useRef([]); // mirrors `timeline` so the exec chain always reads live state
     const MAX_RETRIES = 3;
+
+    useEffect(() => {
+        timelineRef.current = timeline;
+    }, [timeline]);
 
     // Chat history for AI context continuity
     const chatHistoryRef = useRef([]);
@@ -104,6 +206,18 @@ export default function SmartTerminal({ xtermRef, onClose, layout, onLayoutChang
     // Theme
     const [themeId, setThemeId] = useState(() => localStorage.getItem("opspilot_theme") || "github-dark");
     const [showThemePicker, setShowThemePicker] = useState(false);
+
+    // VS Code Tunnel — launches local VS Code Desktop via Remote-SSH
+    const [vscodeBusy, setVscodeBusy] = useState(false);
+    const [vscodeStatus, setVscodeStatus] = useState(null); // { type: "error"|"info", message }
+
+    // Other Tunnels — quick popover for forwarding/viewing ports without leaving the terminal
+    const [showTunnelPopover, setShowTunnelPopover] = useState(false);
+    const [popoverTunnels, setPopoverTunnels] = useState([]);
+    const [quickLocalPort, setQuickLocalPort] = useState("");
+    const [quickRemotePort, setQuickRemotePort] = useState("");
+    const [quickTunnelBusy, setQuickTunnelBusy] = useState(false);
+    const [quickTunnelError, setQuickTunnelError] = useState(null);
 
     // Sidebar drag-resize refs
     const isDraggingRef = useRef(false);
@@ -158,8 +272,8 @@ export default function SmartTerminal({ xtermRef, onClose, layout, onLayoutChang
 
     // Initial load from localStorage
     useEffect(() => {
-        const savedSessions = localStorage.getItem("opspilot_sessions");
-        const lastActiveId = localStorage.getItem("opspilot_active_session_id");
+        const savedSessions = localStorage.getItem(sessionsKey);
+        const lastActiveId = localStorage.getItem(activeSessionKey);
 
         let loadedSessions = [];
         if (savedSessions) {
@@ -171,18 +285,20 @@ export default function SmartTerminal({ xtermRef, onClose, layout, onLayoutChang
             }
         }
 
-        const defaultPrompt = "You are OpsPilot, an expert Linux/DevOps AI assistant integrated into an SSH terminal IDE.\n\nWhen the user gives you a task, generate a numbered command plan. Format each command EXACTLY as:\n## Command Plan\n1. `command here` - Brief description of what this does\n2. `another command` - Brief description of what this does\n\nWhen a command fails and you are asked to fix it, provide a new command plan for the fix.\nIf the user asks a general question (not a task), respond normally in markdown.\nAlways consider the terminal context provided. Wrap any standalone commands in ```bash blocks.";
-
-        // Handle migration from old single-session storage or empty state
+        // Start a fresh conversation when this connection has none. Nothing is
+        // carried over from another host: the timeline holds that host's real
+        // command output, so importing it would put the previous VM's results
+        // in front of the current one.
         if (loadedSessions.length === 0) {
-            const oldTimeline = localStorage.getItem("opspilot_timeline");
-            const oldHistory = localStorage.getItem("opspilot_chat_history");
-            
             const newSession = {
                 id: Date.now().toString(),
                 title: "New Conversation",
-                timeline: oldTimeline ? JSON.parse(oldTimeline) : [],
-                chatHistory: oldHistory ? JSON.parse(oldHistory) : [{ role: "system", content: defaultPrompt }],
+                timeline: [],
+                // No system-role entry here — the backend prepends the user's
+                // configured system prompt (Settings > AI > System Prompt) on
+                // every request. Keeping a second copy here caused the two to
+                // silently contradict each other when a user customized theirs.
+                chatHistory: [],
                 timestamp: new Date().toLocaleString()
             };
             
@@ -195,12 +311,18 @@ export default function SmartTerminal({ xtermRef, onClose, layout, onLayoutChang
             const active = loadedSessions.find(s => s.id === activeId) || loadedSessions[0];
             setActiveSessionId(active.id);
             setTimeline(active.timeline);
-            chatHistoryRef.current = active.chatHistory;
+            // Strip any system-role entry persisted by older versions of this app.
+            chatHistoryRef.current = (active.chatHistory || []).filter(m => m.role !== "system");
         }
 
-        // Clean up old storage keys if they exist
+        // Drop the pre-scoping global keys. They are host-agnostic, so there is
+        // no safe host to attribute them to and nothing to migrate them into.
         localStorage.removeItem("opspilot_timeline");
         localStorage.removeItem("opspilot_chat_history");
+        localStorage.removeItem("opspilot_sessions");
+        localStorage.removeItem("opspilot_active_session_id");
+    // Storage keys are fixed for the component's lifetime — it remounts per connection.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     // Save current active session data to sessions list and localStorage
@@ -219,10 +341,11 @@ export default function SmartTerminal({ xtermRef, onClose, layout, onLayoutChang
                 }
                 return s;
             });
-            localStorage.setItem("opspilot_sessions", JSON.stringify(updated));
-            localStorage.setItem("opspilot_active_session_id", activeSessionId);
+            localStorage.setItem(sessionsKey, JSON.stringify(updated));
+            localStorage.setItem(activeSessionKey, activeSessionId);
             return updated;
         });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [timeline, activeSessionId]);
 
     useEffect(() => {
@@ -308,6 +431,9 @@ export default function SmartTerminal({ xtermRef, onClose, layout, onLayoutChang
         listen(`ssh-output:${MAIN_SESSION_ID}`, (event) => {
             const chunk = event.payload;
             bufferRef.text += chunk;
+            // Liveness signal for the exit-code poller: a command that is still
+            // printing is still working, however long it takes.
+            lastOutputAtRef.current = Date.now();
 
             // Keep buffer size manageable (last 2000 chars)
             if (bufferRef.text.length > 2000) {
@@ -345,12 +471,16 @@ export default function SmartTerminal({ xtermRef, onClose, layout, onLayoutChang
      * Uses exec_ssh_command (separate SSH channel) to read the file,
      * completely bypassing noisy PTY output parsing.
      */
-    const pollExitCode = useCallback(async (execId, maxWaitMs = 120000) => {
+    const pollExitCode = useCallback(async (execId) => {
         const rcFile = `/tmp/.opspilot_rc_${execId}`;
         const startTime = Date.now();
         let delay = 500; // start fast, then slow down
 
-        while (Date.now() - startTime < maxWaitMs && chainRef.current) {
+        // Count the dispatch itself as activity so a command that takes a while
+        // to print its first line isn't judged idle straight away.
+        lastOutputAtRef.current = Date.now();
+
+        while (chainRef.current) {
             await new Promise(r => setTimeout(r, delay));
             delay = Math.min(delay + 250, 2000); // ramp up to 2s
 
@@ -371,9 +501,16 @@ export default function SmartTerminal({ xtermRef, onClose, layout, onLayoutChang
             } catch {
                 // File doesn't exist yet or channel busy — keep polling
             }
+
+            // Give up on silence, not on elapsed time. The previous fixed 2-minute
+            // budget failed any build, package install or migration that ran longer
+            // than that — the command kept going and succeeded, but the chain had
+            // already marked it timed out and stopped, so nothing auto-ran next.
+            const idleFor = Date.now() - lastOutputAtRef.current;
+            if (idleFor > STALL_IDLE_MS || Date.now() - startTime > HARD_TIMEOUT_MS) break;
         }
 
-        // Timeout or cancelled
+        // Stalled or cancelled
         invoke("exec_ssh_command", {
             sessionId: MAIN_SESSION_ID,
             command: `rm -f ${rcFile}`,
@@ -416,7 +553,11 @@ export default function SmartTerminal({ xtermRef, onClose, layout, onLayoutChang
         setAiLoading(true);
         setStreamBuffer("");
         try {
-            await invoke("stream_ai_chat", { messages: chatHistoryRef.current });
+            // Filter out any system-role entries (e.g. leftover from older
+            // versions' localStorage). The backend prepends the configured
+            // system prompt on its own — sending a second one here would
+            // silently contradict it.
+            await invoke("stream_ai_chat", { messages: chatHistoryRef.current.filter(m => m.role !== "system") });
         } catch (err) {
             setTimeline(prev => [...prev, { type: "ai_message", content: `Error: ${err}` }]);
             setAiLoading(false);
@@ -439,7 +580,7 @@ export default function SmartTerminal({ xtermRef, onClose, layout, onLayoutChang
 
     /* ──── PLAN EXECUTION ENGINE (marker-based) ──── */
     const approveAndExecute = useCallback((planIndex) => {
-        const entry = timeline[planIndex];
+        const entry = timelineRef.current[planIndex];
         if (!entry || entry.type !== "plan") return;
 
         setExecutingPlanIdx(planIndex);
@@ -447,17 +588,29 @@ export default function SmartTerminal({ xtermRef, onClose, layout, onLayoutChang
         retryCountRef.current = 0;
         chainRef.current = true;
 
-        executeCommandAt(planIndex, 0);
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [timeline]);
+        // Reset pipefail state for this shell so a failed command inside a
+        // pipeline (e.g. `curl ... | bash`) can't masquerade as success.
+        invoke("send_ssh_input", {
+            sessionId: MAIN_SESSION_ID,
+            input: "set -o pipefail\n",
+        }).catch(() => { });
+
+        executeCommandAtRef.current?.(planIndex, 0);
+    }, []);
 
     const executeCommandAt = useCallback(async (planIdx, cmdIdx) => {
         if (!chainRef.current) return;
 
         // Skip disabled commands and find next enabled one
-        const plan = timeline[planIdx];
+        // Read from the ref (not the `timeline` closure) so edits/toggles made
+        // to the plan mid-run are honored on the next step instead of being
+        // silently overridden by a stale snapshot from when the chain started.
+        const plan = timelineRef.current[planIdx];
         let idx = cmdIdx;
-        while (idx < plan.commands.length && !plan.commands[idx].enabled) {
+        // Blank commands are skipped alongside disabled ones — an empty brace
+        // group is a shell syntax error, which would break the whole chain.
+        while (idx < plan.commands.length
+            && (!plan.commands[idx].enabled || !plan.commands[idx].text.trim())) {
             setTimeline(prev => {
                 const next = [...prev];
                 const p = { ...next[planIdx], commands: [...next[planIdx].commands] };
@@ -489,14 +642,34 @@ export default function SmartTerminal({ xtermRef, onClose, layout, onLayoutChang
         const execId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
         const rcFile = `/tmp/.opspilot_rc_${execId}`;
 
-        // Send command — exit code gets written to a temp file
+        // Wrap the command in a brace group and put the exit-code capture on the
+        // group's closing line:
+        //
+        //     {
+        //     <cmd.text>
+        //     }; echo $? > <rcFile>
+        //
+        // cmd.text still occupies whole lines of its own, so trailing `#`
+        // comments and heredocs/multi-line scripts stay intact — the reason the
+        // capture was previously sent as a separate write.
+        //
+        // The difference is that the shell now parses the *entire* construct
+        // before it runs anything, so nothing of ours is left sitting in the tty
+        // input buffer. Sent as two separate lines, the `echo $?` line waited in
+        // that buffer and was swallowed by any command that reads stdin — a sudo
+        // password prompt, `apt` asking a config question, `docker run -i`. The
+        // rc file was then never written, the poller ran out its budget, and the
+        // chain stopped even though the command itself had succeeded.
+        //
+        // A brace group is not a subshell, so `cd` and other state changes still
+        // affect the session exactly as before.
         await invoke("send_ssh_input", {
             sessionId: MAIN_SESSION_ID,
-            input: `${cmd.text} ; echo $? > ${rcFile}\n`,
+            input: `{\n${cmd.text}\n}; echo $? > ${rcFile}\n`,
         });
 
         // Poll exit code via separate SSH channel (no PTY noise)
-        const { code, timedOut } = await pollExitCode(execId, 120000);
+        const { code, timedOut } = await pollExitCode(execId);
 
         if (!chainRef.current) return;
 
@@ -524,13 +697,14 @@ export default function SmartTerminal({ xtermRef, onClose, layout, onLayoutChang
 
                 const termOutput = getTerminalContext();
                 const errorMsg = timedOut
-                    ? `Command timed out after 2 minutes: \`${cmd.text}\``
+                    ? `Command produced no output for ${STALL_IDLE_MS / 60000} minutes and was treated as stalled: \`${cmd.text}\``
                     : `Command failed (exit code ${exitCode}): \`${cmd.text}\``;
 
                 setTimeline(prev => [...prev, {
                     type: "error_recovery",
                     failedCommand: cmd.text,
                     exitCode,
+                    timedOut,
                     retryNum: retryCountRef.current,
                 }]);
 
@@ -559,11 +733,23 @@ export default function SmartTerminal({ xtermRef, onClose, layout, onLayoutChang
             retryCountRef.current = 0;
             setTimeout(() => {
                 if (chainRef.current) {
-                    executeCommandAt(planIdx, idx + 1);
+                    executeCommandAtRef.current?.(planIdx, idx + 1);
                 }
             }, 300);
         }
-    }, [timeline, pollExitCode, sendToAI, getTerminalContext]);
+    }, [pollExitCode, sendToAI, getTerminalContext]);
+
+    // The chain is driven through a ref so each step runs the current
+    // executeCommandAt rather than the one captured when Approve All was
+    // clicked — otherwise every step after the first ran against a stale
+    // sendToAI/session snapshot from the render that started the chain.
+    useEffect(() => {
+        executeCommandAtRef.current = executeCommandAt;
+    }, [executeCommandAt]);
+
+    // A chain outliving its component would keep polling a session that is gone
+    // (e.g. after logout), so stop it when OpsPilot unmounts.
+    useEffect(() => () => { chainRef.current = false; }, []);
 
     const cancelExecution = () => {
         chainRef.current = false;
@@ -628,20 +814,15 @@ export default function SmartTerminal({ xtermRef, onClose, layout, onLayoutChang
         setTimeline([]);
         setPrompt("");
         setStreamBuffer("");
-        // Keep only system prompt
-        const systemMsg = chatHistoryRef.current[0];
-        chatHistoryRef.current = [systemMsg];
-        localStorage.removeItem("opspilot_timeline");
-        localStorage.removeItem("opspilot_chat_history");
+        chatHistoryRef.current = [];
     };
 
     const handleNewChat = () => {
-        const defaultPrompt = chatHistoryRef.current[0].content;
         const newSession = {
             id: Date.now().toString(),
             title: "New Conversation",
             timeline: [],
-            chatHistory: [{ role: "system", content: defaultPrompt }],
+            chatHistory: [],
             timestamp: new Date().toLocaleString()
         };
 
@@ -651,6 +832,93 @@ export default function SmartTerminal({ xtermRef, onClose, layout, onLayoutChang
         chatHistoryRef.current = newSession.chatHistory;
         setPrompt("");
         setStreamBuffer("");
+    };
+
+    /* ──── VS CODE TUNNEL ──── */
+    // Launches local VS Code Desktop over Remote-SSH, rooted at this
+    // session's current remote directory — the VM never needs a public IP,
+    // VS Code connects over the same SSH credentials Servera already has.
+    const handleVscodeTunnel = async () => {
+        if (!profileId) {
+            setVscodeStatus({ type: "error", message: "Save this connection as a profile first to use VS Code Tunnel." });
+            return;
+        }
+        setVscodeBusy(true);
+        setVscodeStatus(null);
+        try {
+            const hasCli = await invoke("check_vscode_cli");
+            if (!hasCli) {
+                setVscodeStatus({ type: "error", message: "VS Code not found on this machine. Install VS Code Desktop, or use Cloud Browser instead." });
+                return;
+            }
+            const installed = await invoke("ensure_remote_ssh_extension");
+            if (installed) {
+                setVscodeStatus({ type: "info", message: "Installed the Remote-SSH extension…" });
+            }
+
+            let remotePath = "~";
+            try {
+                const pwdOut = await invoke("exec_ssh_command", { sessionId: MAIN_SESSION_ID, command: "pwd" });
+                const trimmed = String(pwdOut || "").trim();
+                if (trimmed) remotePath = trimmed;
+            } catch { /* fall back to home dir */ }
+
+            const alias = await invoke("ensure_ssh_config_host", { profileId });
+            await invoke("open_vscode_remote", { alias, path: remotePath });
+            setVscodeStatus(null);
+        } catch (err) {
+            setVscodeStatus({ type: "error", message: String(err) });
+        } finally {
+            setVscodeBusy(false);
+        }
+    };
+
+    /* ──── OTHER TUNNELS (quick popover) ──── */
+    const refreshPopoverTunnels = useCallback(async () => {
+        try {
+            const list = await invoke("get_active_tunnels");
+            setPopoverTunnels(list || []);
+        } catch { /* ignore */ }
+    }, []);
+
+    useEffect(() => {
+        if (showTunnelPopover) refreshPopoverTunnels();
+    }, [showTunnelPopover, refreshPopoverTunnels]);
+
+    const handleQuickCreateTunnel = async () => {
+        if (!quickLocalPort || !quickRemotePort) return;
+        setQuickTunnelBusy(true);
+        setQuickTunnelError(null);
+        try {
+            await invoke("create_tunnel", {
+                sessionId: MAIN_SESSION_ID,
+                tunnelId: `quick-${Date.now()}`,
+                tunnelType: "local",
+                localPort: parseInt(quickLocalPort, 10),
+                remoteHost: "127.0.0.1",
+                remotePort: parseInt(quickRemotePort, 10),
+                ip, user,
+                port: port || 22,
+                password: password || null,
+                privateKey: privateKey || null,
+                proxyJump: proxyJump || null,
+                profileId: profileId || null,
+            });
+            setQuickLocalPort("");
+            setQuickRemotePort("");
+            refreshPopoverTunnels();
+        } catch (err) {
+            setQuickTunnelError(String(err));
+        } finally {
+            setQuickTunnelBusy(false);
+        }
+    };
+
+    const handleQuickCloseTunnel = async (tunnelId) => {
+        try {
+            await invoke("close_tunnel", { tunnelId });
+            refreshPopoverTunnels();
+        } catch { /* ignore */ }
     };
 
     const switchSession = (sessionId) => {
@@ -748,9 +1016,9 @@ export default function SmartTerminal({ xtermRef, onClose, layout, onLayoutChang
                                             }}
                                         />
                                     ) : (
-                                        <code className="op-cmd-text">{cmd.text}</code>
+                                        <code className="op-cmd-text" title={cmd.text}>{cmd.text}</code>
                                     )}
-                                    {cmd.description && <span className="op-cmd-desc">{cmd.description}</span>}
+                                    {cmd.description && <span className="op-cmd-desc" title={cmd.description}>{cmd.description}</span>}
                                 </div>
                             </div>
 
@@ -889,6 +1157,91 @@ export default function SmartTerminal({ xtermRef, onClose, layout, onLayoutChang
                             <span style={{ marginLeft: 4, fontSize: 11, fontWeight: 700 }}>New Chat</span>
                         </button>
                     </div>
+                    <div className="op-popover-anchor">
+                        <button
+                            className="op-icon-btn"
+                            onClick={handleVscodeTunnel}
+                            title="Open VS Code here via Remote-SSH"
+                            disabled={vscodeBusy}
+                        >
+                            {vscodeBusy ? <Loader2 size={14} className="animate-spin" /> : <Code2 size={14} />}
+                        </button>
+                        {vscodeStatus && (
+                            <div className={`op-status-popover ${vscodeStatus.type}`}>
+                                <span>{vscodeStatus.message}</span>
+                                <button className="op-icon-btn" onClick={() => setVscodeStatus(null)} title="Dismiss">
+                                    <X size={12} />
+                                </button>
+                            </div>
+                        )}
+                    </div>
+
+                    <div className="op-popover-anchor">
+                        <button
+                            className={`op-icon-btn ${showTunnelPopover ? "active" : ""}`}
+                            onClick={() => setShowTunnelPopover(p => !p)}
+                            title="Other Tunnels"
+                        >
+                            <ArrowRightLeft size={14} />
+                        </button>
+                        {showTunnelPopover && (
+                            <div className="op-tunnel-popover">
+                                <div className="op-tunnel-popover-title">Quick Tunnels</div>
+
+                                <div className="op-tunnel-popover-form">
+                                    <input
+                                        type="number"
+                                        placeholder="Local"
+                                        value={quickLocalPort}
+                                        onChange={e => setQuickLocalPort(e.target.value)}
+                                    />
+                                    <ChevronRight size={12} />
+                                    <input
+                                        type="number"
+                                        placeholder="Remote"
+                                        value={quickRemotePort}
+                                        onChange={e => setQuickRemotePort(e.target.value)}
+                                    />
+                                    <button
+                                        className="op-icon-btn"
+                                        onClick={handleQuickCreateTunnel}
+                                        disabled={quickTunnelBusy || !quickLocalPort || !quickRemotePort}
+                                        title="Create tunnel"
+                                    >
+                                        <Plus size={14} />
+                                    </button>
+                                </div>
+                                {quickTunnelError && <div className="op-tunnel-popover-error">{quickTunnelError}</div>}
+
+                                <div className="op-tunnel-popover-list">
+                                    {popoverTunnels.length === 0 ? (
+                                        <div className="op-tunnel-popover-empty">No active tunnels</div>
+                                    ) : popoverTunnels.map(t => (
+                                        <div key={t.id} className="op-tunnel-popover-item">
+                                            <span>
+                                                {t.tunnel_type === "dynamic" ? `SOCKS5 :${t.local_port}` : `:${t.local_port} → ${t.remote_host}:${t.remote_port}`}
+                                            </span>
+                                            <div className="op-tunnel-popover-item-actions">
+                                                {t.tunnel_type === "local" && onOpenCloudBrowser && (
+                                                    <button
+                                                        className="op-icon-btn"
+                                                        title="Open in Cloud Browser"
+                                                        onClick={() => { onOpenCloudBrowser(`http://localhost:${t.local_port}`); setShowTunnelPopover(false); }}
+                                                    >
+                                                        <Cloud size={13} />
+                                                    </button>
+                                                )}
+                                                <button className="op-icon-btn" title="Close tunnel" onClick={() => handleQuickCloseTunnel(t.id)}>
+                                                    <X size={13} />
+                                                </button>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+                    </div>
+
                     <button
                         className={`op-icon-btn ${showThemePicker ? "active" : ""}`}
                         onClick={() => setShowThemePicker(p => !p)}
@@ -966,7 +1319,9 @@ export default function SmartTerminal({ xtermRef, onClose, layout, onLayoutChang
                                     <div className="op-error-card">
                                         <AlertCircle size={14} className="icon-error" />
                                         <span>
-                                            Command failed (exit code {entry.exitCode}): <code>{entry.failedCommand}</code>
+                                            {entry.timedOut
+                                                ? <>Command went silent for {STALL_IDLE_MS / 60000} minutes and was treated as stalled: <code>{entry.failedCommand}</code></>
+                                                : <>Command failed (exit code {entry.exitCode}): <code>{entry.failedCommand}</code></>}
                                             {" "} — Asking AI for fix (attempt {entry.retryNum}/{MAX_RETRIES})
                                         </span>
                                     </div>

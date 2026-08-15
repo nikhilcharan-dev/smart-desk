@@ -49,17 +49,24 @@ export default function EnvManager() {
 
     const handleAddEnv = async () => {
         if (!newKey.trim() || !newValue.trim()) return;
+        // Wrap an arbitrary string as a single-quoted shell token — the only
+        // context where $, backticks and quotes are all inert.
+        const sq = (s) => `'${s.replace(/'/g, "'\\''")}'`;
+        const safeKey = newKey.replace(/[^a-zA-Z0-9_]/g, ''); // POSIX-valid name only
+        if (!safeKey) {
+            setError("Variable name must contain only letters, digits or underscores.");
+            return;
+        }
+
         setLoading(true);
         try {
-            // Append export statement to ~/.bashrc for persistency
-            // Using single quotes to prevent early expansion, except around the value where we might want literal
-            // A safer bash append:
-            const safeKey = newKey.replace(/[^a-zA-Z0-9_]/g, ''); // Ensure key is valid POSIX
-            const safeVal = newValue.replace(/'/g, "'\\''"); // Escape single quotes for outer shell
-
+            // Build the exact line to append, with the value single-quoted, then
+            // single-quote the whole line for the shell. No double-quote layer
+            // means no expansion of $ / backticks in a user-supplied value.
+            const line = `export ${safeKey}=${sq(newValue)}`;
             await invoke("exec_ssh_command", {
                 sessionId: MAIN_SESSION_ID,
-                command: `echo "export ${safeKey}='${safeVal}'" >> ~/.bashrc`
+                command: `printf '%s\\n' ${sq(line)} >> ~/.bashrc`
             });
 
             setIsCreating(false);
