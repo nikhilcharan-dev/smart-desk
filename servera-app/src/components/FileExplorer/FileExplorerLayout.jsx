@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { MAIN_SESSION_ID } from "../../utils/terminal";
+import { formatRemoteError } from "../../utils/errors";
 import GenericFileTree from "./GenericFileTree";
 import TransferProgress from "./TransferProgress";
 import TransferManager from "./TransferManager";
@@ -112,23 +113,24 @@ function FileExplorerLayoutInner({ profileId }) {
                 }
             } catch (e) {
                 console.error("Download failed:", e);
+                alert(formatRemoteError(e, `Downloading ${data.name}`));
             }
 
         } else if (targetMode === 'sftp' && data.mode === 'local') {
             const remoteFile = targetPath.endsWith('/') ? targetPath + data.name : targetPath + '/' + data.name;
             const localFile = data.path;
 
-            const doUpload = (useSudo = false) => startTransfer({
-                kind: 'upload',
-                name: data.name,
-                isDir: data.isDir || false,
-                src: localFile,
-                dest: remoteFile,
-                useSudo,
-            });
-
             try {
-                await doUpload(false);
+                // `sftp_upload` stages through /tmp and moves into place with
+                // sudo by itself when the destination is not writable, so there
+                // is no separate elevated retry to offer here.
+                await startTransfer({
+                    kind: 'upload',
+                    name: data.name,
+                    isDir: data.isDir || false,
+                    src: localFile,
+                    dest: remoteFile,
+                });
                 setRefreshRemote(prev => prev + 1);
 
                 // If move action, delete the source file locally
@@ -144,20 +146,8 @@ function FileExplorerLayoutInner({ profileId }) {
                     }
                 }
             } catch (e) {
-                const errMsg = String(e);
-                const isPermissionDenied = errMsg.includes("permission") || errMsg.includes("Permission") || errMsg.includes("SFTP(3)");
-                if (isPermissionDenied && confirm(`Permission denied uploading to ${remoteFile}.\n\nRetry with sudo (requires passwordless sudo on the server)?`)) {
-                    try {
-                        await doUpload(true);
-                        setRefreshRemote(prev => prev + 1);
-                    } catch (sudoErr) {
-                        console.error("Sudo upload failed:", sudoErr);
-                        alert(`Sudo upload also failed: ${sudoErr}`);
-                    }
-                } else if (!isPermissionDenied) {
-                    console.error("Upload failed:", e);
-                    alert(`Upload failed: ${e}`);
-                }
+                console.error("Upload failed:", e);
+                alert(formatRemoteError(e, `Uploading ${data.name} to ${remoteFile}`));
             }
         }
     }, [startTransfer]);

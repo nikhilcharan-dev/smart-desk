@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { PackageOpen, DownloadCloud, CheckCircle2, AlertCircle, RefreshCw, TerminalSquare, X } from "lucide-react";
 import { MAIN_SESSION_ID } from "../../utils/terminal";
+import { formatRemoteError } from "../../utils/errors";
 import "./AptManager.css";
 
 export default function AptManager() {
@@ -37,10 +38,14 @@ export default function AptManager() {
                 return;
             }
 
-            // 2. Perform silent update to refresh lists
-            await invoke("exec_ssh_command", {
+            // 2. Perform silent update to refresh lists. apt's lists are always
+            // root-owned, so this takes the always-elevate path: `sudo -n`, then
+            // the profile's stored sudo password. A literal `sudo apt-get …` on
+            // the plain channel just dies with "no tty present" wherever sudo
+            // wants a password.
+            await invoke("exec_ssh_command_sudo", {
                 sessionId: MAIN_SESSION_ID,
-                command: "sudo apt-get update -qq"
+                command: "apt-get update -qq"
             });
 
             setStatusText("Calculating upgradable packages...");
@@ -85,7 +90,7 @@ export default function AptManager() {
             setHasChecked(true);
 
         } catch (err) {
-            setError(err.toString());
+            setError(formatRemoteError(err, "Checking for updates"));
             setStatusText("Failed to check for updates.");
         } finally {
             setLoading(false);
@@ -121,9 +126,9 @@ export default function AptManager() {
 
             setUpdateLog(prev => prev + "Executing upgrade on remote host... This may take several minutes. Please do not close the app.\n");
 
-            const result = await invoke("exec_ssh_command", {
+            const result = await invoke("exec_ssh_command_sudo", {
                 sessionId: MAIN_SESSION_ID,
-                command: "sudo DEBIAN_FRONTEND=noninteractive apt-get upgrade -y"
+                command: "DEBIAN_FRONTEND=noninteractive apt-get upgrade -y"
             });
 
             setUpdateLog(prev => prev + "\n" + result + "\n\n> Upgrade completed successfully 🎉");
@@ -132,7 +137,7 @@ export default function AptManager() {
             await fetchUpdates();
 
         } catch (err) {
-            setUpdateLog(prev => prev + "\n" + "ERROR OCCURRED:\n" + err);
+            setUpdateLog(prev => prev + "\n" + formatRemoteError(err, "The upgrade"));
         }
     };
 

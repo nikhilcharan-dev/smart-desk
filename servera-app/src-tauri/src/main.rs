@@ -10,6 +10,7 @@ mod os_support;
 mod wireguard;
 mod known_hosts;
 mod vscode_remote;
+mod vault;
 
 use ai_config::{AiConfig, AiConfigManager};
 use profile_manager::{Profile, ProfileManager};
@@ -984,6 +985,46 @@ fn save_snippets(app: AppHandle, content: String) -> Result<(), String> {
 }
 
 /* =========================
+   SECRETS VAULT COMMANDS
+   ========================= */
+
+#[tauri::command]
+fn vault_load_items(app: AppHandle) -> Result<Vec<vault::VaultItem>, String> {
+    let mgr = vault::VaultManager::new(&app);
+    mgr.load_items()
+}
+
+#[tauri::command]
+fn vault_save_item(app: AppHandle, item: vault::VaultItem) -> Result<vault::VaultItem, String> {
+    let mgr = vault::VaultManager::new(&app);
+    mgr.save_item(item)
+}
+
+#[tauri::command]
+fn vault_delete_item(app: AppHandle, id: String) -> Result<(), String> {
+    let mgr = vault::VaultManager::new(&app);
+    mgr.delete_item(&id)
+}
+
+#[tauri::command]
+fn vault_touch_item(app: AppHandle, id: String) -> Result<(), String> {
+    let mgr = vault::VaultManager::new(&app);
+    mgr.touch_item(&id)
+}
+
+#[tauri::command]
+fn vault_export_backup(app: AppHandle) -> Result<String, String> {
+    let mgr = vault::VaultManager::new(&app);
+    mgr.export_backup()
+}
+
+#[tauri::command]
+fn vault_import_backup(app: AppHandle, json_data: String) -> Result<usize, String> {
+    let mgr = vault::VaultManager::new(&app);
+    mgr.import_backup(&json_data)
+}
+
+/* =========================
    SSH CONFIG IMPORT COMMANDS
    ========================= */
 
@@ -1751,6 +1792,13 @@ fn main() {
             open_vscode_remote,
             // Fleet Orchestration
             fleet_run_command,
+            // Secrets Vault
+            vault_load_items,
+            vault_save_item,
+            vault_delete_item,
+            vault_touch_item,
+            vault_export_backup,
+            vault_import_backup,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")

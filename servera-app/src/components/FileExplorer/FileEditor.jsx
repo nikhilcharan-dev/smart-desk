@@ -3,6 +3,7 @@ import Editor from "@monaco-editor/react";
 import { X, Save, FileText } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { MAIN_SESSION_ID } from "../../utils/terminal";
+import { formatRemoteError } from "../../utils/errors";
 import "./FileEditor.css";
 
 const PHASES = [
@@ -133,7 +134,7 @@ export default function FileEditor({ file, mode, onClose, onSaveSuccess }) {
                 advanceToWithDone(3, () => setLoading(false));
             } catch (err) {
                 console.error("Failed to load file:", err);
-                setError(err.message || err.toString());
+                setError(formatRemoteError(err, `Opening ${file.name}`));
                 setLoading(false);
             }
         };
@@ -152,7 +153,10 @@ export default function FileEditor({ file, mode, onClose, onSaveSuccess }) {
         );
     }, []);
 
-    const handleSave = async (useSudo = false) => {
+    // Saving a root-owned file needs no special handling here: `sftp_write`
+    // escalates to sudo on the backend when the plain write is denied, so a
+    // failure that reaches this catch is one sudo could not fix either.
+    const handleSave = async () => {
         setSaving(true);
         setError(null);
         try {
@@ -160,11 +164,7 @@ export default function FileEditor({ file, mode, onClose, onSaveSuccess }) {
             // against any path that still mixes line endings.
             const normalized = content.replace(/\r\n|\r|\n/g, eolRef.current);
             const bytes = new TextEncoder().encode(normalized);
-            let command = mode === 'sftp' ? "sftp_write" : "local_write_file";
-
-            if (useSudo && mode === 'sftp') {
-                command = "sftp_write_sudo";
-            }
+            const command = mode === 'sftp' ? "sftp_write" : "local_write_file";
 
             // For SFTP write, the backend expects 'content' as Vec<u8>
             const args = mode === 'sftp'
@@ -176,18 +176,7 @@ export default function FileEditor({ file, mode, onClose, onSaveSuccess }) {
             onClose();
         } catch (err) {
             console.error("Failed to save file:", err);
-            const errMsg = String(err);
-
-            // Check for permission error
-            if (mode === 'sftp' && !useSudo && (errMsg.includes("Permission denied") || errMsg.includes("code: 3") || errMsg.includes("access"))) {
-                if (confirm(`Permission denied. Try saving with Sudo (root)?`)) {
-                    // Retry with sudo
-                    await handleSave(true);
-                    return; // Exit current execution, handleSave(true) handles the rest
-                }
-            }
-
-            setError(errMsg);
+            setError(formatRemoteError(err, `Saving ${file.name}`));
         } finally {
             setSaving(false);
         }
@@ -205,7 +194,7 @@ export default function FileEditor({ file, mode, onClose, onSaveSuccess }) {
                     <div className="header-actions">
                         <button
                             className="save-btn"
-                            onClick={() => handleSave(false)}
+                            onClick={() => handleSave()}
                             disabled={loading || saving}
                         >
                             <Save size={16} className={saving ? "save-spin" : ""} />

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { MAIN_SESSION_ID } from '../../utils/terminal';
+import { formatRemoteError } from '../../utils/errors';
 import { Network, RefreshCw, Search, X, Globe, Shield, Database, Server, Ban } from 'lucide-react';
 import './PortScanner.css';
 
@@ -93,7 +94,7 @@ export default function PortScanner() {
             }
             setPorts(parsePorts(output));
         } catch (err) {
-            setError(err.toString());
+            setError(formatRemoteError(err, "Scanning listening ports"));
         } finally {
             setLoading(false);
         }
@@ -119,11 +120,7 @@ export default function PortScanner() {
             });
             setTimeout(scanPorts, 500);
         } catch (err) {
-            const raw = String(err);
-            const msg = raw.includes('SUDO_PASSWORD_REQUIRED')
-                ? `Cannot close port ${p.port}: this is a root-owned process. Add a sudo password to this profile (Authentication → Sudo password) and reconnect.`
-                : `Failed to close port ${p.port}: ${raw}`;
-            setError(msg);
+            setError(formatRemoteError(err, `Closing port ${p.port}`));
         } finally {
             setKilling(null);
         }

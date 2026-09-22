@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { MAIN_SESSION_ID } from '../../utils/terminal';
+import { formatRemoteError } from '../../utils/errors';
 import { Cpu, RefreshCw, Search, X, Skull, ArrowUpDown, Pause, Play } from 'lucide-react';
 import './ProcessManager.css';
 
@@ -43,7 +44,7 @@ export default function ProcessManager() {
             });
             setProcesses(parseProcesses(output));
         } catch (err) {
-            setError(err.toString());
+            setError(formatRemoteError(err, "Listing processes"));
         } finally {
             setLoading(false);
         }
@@ -70,7 +71,9 @@ export default function ProcessManager() {
             });
             setTimeout(loadProcesses, 500);
         } catch (err) {
-            setError('Kill failed: ' + err);
+            // The backend escalates a denied kill on its own, so an error here
+            // means sudo was unavailable or refused — say which.
+            setError(formatRemoteError(err, `Killing PID ${pid}`));
         }
     };
 

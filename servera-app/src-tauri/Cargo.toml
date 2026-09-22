@@ -25,6 +25,8 @@ home = "0.5.12"
 uuid = { version = "1.23.0", features = ["v4"] }
 onetun = { version = "=0.3.10", default-features = false }
 ipnet = "2"
+aes-gcm = "0.10"
+rand = "0.8"
 
 [build-dependencies]
 tauri-build = { version = "2.5.3", features = [] }

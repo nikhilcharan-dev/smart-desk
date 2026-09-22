@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 import {
     LayoutDashboard, FolderOpen, Terminal, Monitor,
     Settings, LogOut, Cpu, Network, ScrollText, Code2, Command,
-    Box, Shield, PackageOpen, ShieldCheck, ArrowRightLeft, Zap, BookOpen
+    Box, Shield, PackageOpen, ShieldCheck, ArrowRightLeft, Zap, BookOpen, KeyRound
 } from 'lucide-react';
 import './CommandPalette.css';
 
@@ -12,6 +12,7 @@ const ACTIONS = [
     { id: 'nav-files', name: 'File Explorer', desc: 'Browse local & remote files', icon: FolderOpen, group: 'Navigate', action: 'setView', value: 'files' },
     { id: 'nav-terminal', name: 'Smart Terminal', desc: 'AI-powered terminal', icon: Terminal, group: 'Navigate', action: 'setView', value: 'terminal' },
     { id: 'nav-termhub', name: 'TermHub', desc: 'Multi-server terminals', icon: Monitor, group: 'Navigate', action: 'setView', value: 'termhub' },
+    { id: 'nav-vault', name: 'Secrets Vault', desc: 'Secure credential storage & quick copy', icon: KeyRound, group: 'Navigate', action: 'setView', value: 'vault', keywords: 'vault secret password api key credentials' },
     { id: 'nav-processes', name: 'Process Manager', desc: 'View & kill remote processes', icon: Cpu, group: 'Navigate', action: 'setView', value: 'processes' },
     { id: 'nav-ports', name: 'Port Scanner', desc: 'Discover open ports', icon: Network, group: 'Navigate', action: 'setView', value: 'ports' },
     { id: 'nav-logs', name: 'Log Viewer', desc: 'Stream logs with tail -f', icon: ScrollText, group: 'Navigate', action: 'setView', value: 'logs' },
@@ -25,6 +26,7 @@ const ACTIONS = [
     { id: 'nav-permissions', name: 'Access Control', desc: 'File permissions & user access', icon: ShieldCheck, group: 'Navigate', action: 'setView', value: 'permissions' },
     { id: 'nav-settings', name: 'Settings', desc: 'Configure app, AI & sidebar', icon: Settings, group: 'Navigate', action: 'setView', value: 'settings' },
     // Actions
+    { id: 'act-quick-vault', name: 'Quick Secrets Vault (Alt+V)', desc: 'Open spotlight quick-copy flyout', icon: KeyRound, group: 'Actions', action: 'openQuickVault', keywords: 'vault secret password copy' },
     { id: 'act-disconnect', name: 'Disconnect', desc: 'Close SSH session', icon: LogOut, group: 'Actions', action: 'disconnect' },
 ];
 
@@ -81,6 +83,8 @@ export default function CommandPalette({ isOpen, onClose, onAction }) {
             onAction('setView', item.value);
         } else if (item.action === 'disconnect') {
             onAction('disconnect');
+        } else if (item.action === 'openQuickVault') {
+            onAction('openQuickVault');
         }
     };
 

@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { MAIN_SESSION_ID } from '../../utils/terminal';
+import { formatRemoteError } from '../../utils/errors';
 import { ScrollText, RefreshCw, Search, X, Pause, Play, Trash2, Bot, Loader2, FolderOpen, Folder, File, ArrowUp, ChevronRight, Radio, Square } from 'lucide-react';
 import './LogViewer.css';
 
@@ -44,7 +45,7 @@ function RemoteFilePicker({ onSelect, onClose }) {
             const files = res.filter(e => !e.is_dir).sort((a, b) => a.name.localeCompare(b.name));
             setEntries([...dirs, ...files]);
         } catch (err) {
-            setError(String(err));
+            setError(formatRemoteError(err, `Listing ${path}`));
         } finally {
             setLoading(false);
         }
@@ -266,15 +267,9 @@ export default function LogViewer({ profileId, ip, user, port, password, private
                 setLines(newLines);
             }
         } catch (err) {
-            const raw = String(err);
-            // Backend sentinel: elevation was needed but no sudo credential is
-            // available. Point the user at where to add one.
-            const msg = raw.includes('SUDO_PASSWORD_REQUIRED')
-                ? `Permission denied reading ${path}. Add a sudo password to this profile (Authentication → Sudo password) to read protected logs.`
-                : raw.includes('SUDO_PASSWORD_INCORRECT')
-                    ? `The stored sudo password was rejected. Update it in the profile's Authentication settings.`
-                    : `Error: ${raw}`;
-            setLines([msg]);
+            // The backend already tried to elevate this read; what reaches here
+            // is why that could not happen.
+            setLines([formatRemoteError(err, `Reading ${path}`)]);
         } finally {
             setLoading(false);
         }

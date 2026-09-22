@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Clock, Plus, Trash2, RefreshCw, AlertCircle, Save } from "lucide-react";
 import { MAIN_SESSION_ID } from "../../../utils/terminal";
+import { formatRemoteError } from "../../../utils/errors";
 import "./SettingsPanels.css";
 
 export default function CronJobs() {
@@ -60,7 +61,7 @@ export default function CronJobs() {
 
             setJobs(parsed);
         } catch (err) {
-            setError(err.toString());
+            setError(formatRemoteError(err, "Reading the crontab"));
         } finally {
             setLoading(false);
         }
@@ -86,7 +87,7 @@ export default function CronJobs() {
             setNewJob({ minute: "*", hour: "*", dayOfMonth: "*", month: "*", dayOfWeek: "*", command: "" });
             fetchJobs();
         } catch (err) {
-            setError("Failed to add cron job: " + err);
+            setError(formatRemoteError(err, "Adding the cron job"));
             setLoading(false);
         }
     };
@@ -96,15 +97,19 @@ export default function CronJobs() {
 
         setLoading(true);
         try {
-            // Escape special regex chars for grep
-            const safeLine = rawLine.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/'/g, "'\\''");
+            // `grep -F` matches a literal string, so the only escaping needed is
+            // for the surrounding shell quotes. Regex-escaping it as well (the
+            // previous behaviour) inserted backslashes that are part of the
+            // literal being searched for, so no line ever matched and the job
+            // silently stayed in the crontab.
+            const safeLine = rawLine.replace(/'/g, "'\\''");
             await invoke("exec_ssh_command", {
                 sessionId: MAIN_SESSION_ID,
-                command: `crontab -l | grep -vF '${safeLine}' | crontab -`
+                command: `crontab -l | grep -vxF '${safeLine}' | crontab -`
             });
             fetchJobs();
         } catch (err) {
-            setError("Failed to remove cron job: " + err);
+            setError(formatRemoteError(err, "Removing the cron job"));
             setLoading(false);
         }
     };

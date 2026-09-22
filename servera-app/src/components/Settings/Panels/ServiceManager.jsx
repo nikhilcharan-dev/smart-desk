@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Activity, RefreshCw, AlertCircle, Play, Square, RotateCcw } from "lucide-react";
 import { MAIN_SESSION_ID } from "../../../utils/terminal";
+import { formatRemoteError } from "../../../utils/errors";
 import "./SettingsPanels.css";
 
 // Common developer services to monitor
@@ -63,7 +64,7 @@ export default function ServiceManager() {
 
             setServices(results);
         } catch (err) {
-            setError(err.toString());
+            setError(formatRemoteError(err, "Reading service status"));
         } finally {
             setLoading(false);
         }
@@ -80,17 +81,18 @@ export default function ServiceManager() {
     const performAction = async (serviceId, action) => {
         setPendingAction(serviceId);
         try {
-            // Need sudo privileges normally, assuming the SSH user has passwordless sudo or is root
-            // If they aren't, this will fail gracefully and surface the error to the user
+            // The backend runs this plain first and re-runs it through sudo
+            // (NOPASSWD, else the profile's stored sudo password) when the bare
+            // attempt is refused or the inner sudo cannot prompt for a password.
             await invoke("exec_ssh_command", {
                 sessionId: MAIN_SESSION_ID,
-                command: `sudo systemctl ${action} ${serviceId}`
+                command: `systemctl ${action} ${serviceId}`
             });
 
             // Wait a second for state to settle, then refresh
             setTimeout(fetchServices, 1000);
         } catch (err) {
-            setError(`Failed to ${action} ${serviceId}: ` + err);
+            setError(formatRemoteError(err, `${action} of ${serviceId}`));
         } finally {
             setPendingAction(null);
         }
@@ -184,7 +186,8 @@ export default function ServiceManager() {
             </div>
 
             <p style={{ fontSize: '12px', color: '#6b7280', marginTop: '16px', textAlign: 'center' }}>
-                Note: Starting/Stopping services requires 'sudo' privileges on the remote machine.
+                Note: Starting/Stopping services needs root. Servera escalates automatically using
+                passwordless sudo, or the sudo password saved on this profile.
             </p>
         </div>
     );

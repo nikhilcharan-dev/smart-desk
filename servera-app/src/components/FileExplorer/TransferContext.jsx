@@ -2,8 +2,13 @@ import { createContext, useContext, useState, useRef, useEffect, useCallback } f
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { MAIN_SESSION_ID } from "../../utils/terminal";
+import { formatRemoteError } from "../../utils/errors";
 
 const TransferContext = createContext(null);
+
+/** Wording for a transfer record, used in its error line. */
+const describe = (rec) =>
+    `${rec.kind === "upload" ? "Uploading" : "Downloading"} ${rec.name}`;
 
 // eslint-disable-next-line react-refresh/only-export-components
 export function useTransfers() {
@@ -65,8 +70,9 @@ export function TransferProvider({ children }) {
     }, [patch]);
 
     // Records a transfer and executes it. Resolves on success, rejects on
-    // failure so callers can keep their own orchestration (sudo fallback,
-    // post-move source deletion, etc.).
+    // failure so callers can keep their own orchestration (post-move source
+    // deletion, refresh, etc.). Elevation is not orchestrated here — the
+    // backend's SFTP commands escalate to sudo themselves when denied.
     const startTransfer = useCallback(async ({ kind, name, isDir = false, src, dest, useSudo = false }) => {
         const id = (crypto.randomUUID && crypto.randomUUID()) || `${Date.now()}-${Math.random()}`;
         const rec = {
@@ -81,7 +87,7 @@ export function TransferProvider({ children }) {
             await runTransfer(rec);
             patch(id, { status: "finished", progress: 1, error: null });
         } catch (e) {
-            patch(id, { status: "error", error: String(e) });
+            patch(id, { status: "error", error: formatRemoteError(e, describe(rec)) });
             throw e;
         } finally {
             if (activeByName.current[name] === id) delete activeByName.current[name];
@@ -102,7 +108,7 @@ export function TransferProvider({ children }) {
             await runTransfer(rec);
             patch(id, { status: "finished", progress: 1, error: null });
         } catch (e) {
-            patch(id, { status: "error", error: String(e) });
+            patch(id, { status: "error", error: formatRemoteError(e, describe(rec)) });
         } finally {
             if (activeByName.current[rec.name] === id) delete activeByName.current[rec.name];
         }

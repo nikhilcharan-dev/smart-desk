@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Wifi, WifiOff, Shield } from "lucide-react";
+import { Wifi, WifiOff, Shield, KeyRound, Search, Settings } from "lucide-react";
 import "./TopBar.css";
 
 const WG_STATUS_LABELS = {
@@ -15,7 +15,15 @@ const WG_STATUS_LABELS = {
 // macOS/mobile-style Control Center: a WiFi-shaped icon in the top-right
 // that reflects the active WireGuard gateway's live status, and opens a
 // popover to switch gateways on/off without leaving whatever view is open.
-export default function TopBar({ ip, user, profileName }) {
+export default function TopBar({
+    ip,
+    user,
+    profileName,
+    onOpenVault,
+    onOpenCmd,
+    onOpenSettings,
+    isSettingsActive,
+}) {
     const [profiles, setProfiles] = useState([]);
     const [wgStatus, setWgStatus] = useState(null); // null = no active gateway
     const [open, setOpen] = useState(false);
@@ -89,13 +97,47 @@ export default function TopBar({ ip, user, profileName }) {
                 )}
             </div>
             <div className="topbar-right" ref={anchorRef}>
+                {onOpenCmd && (
+                    <button
+                        className="topbar-cmd-btn"
+                        onClick={onOpenCmd}
+                        title="Command Palette (Ctrl+K)"
+                    >
+                        <Search size={13} />
+                        <span className="topbar-cmd-text">Commands</span>
+                        <kbd className="topbar-cmd-kbd">Ctrl+K</kbd>
+                    </button>
+                )}
+
+                <div className="topbar-divider" />
+
+                {onOpenVault && (
+                    <button
+                        className="topbar-icon-btn"
+                        onClick={onOpenVault}
+                        title="Secrets Vault (Alt+V) — Quick Copy"
+                    >
+                        <KeyRound size={15} />
+                    </button>
+                )}
+
                 <button
                     className={`topbar-icon-btn ${iconClass}`}
                     onClick={() => setOpen(p => !p)}
                     title={status ? `WireGuard: ${WG_STATUS_LABELS[status] || status}` : "WireGuard: Off"}
                 >
-                    {status && status !== "error" ? <Wifi size={16} /> : <WifiOff size={16} />}
+                    {status && status !== "error" ? <Wifi size={15} /> : <WifiOff size={15} />}
                 </button>
+
+                {onOpenSettings && (
+                    <button
+                        className={`topbar-icon-btn ${isSettingsActive ? "active" : ""}`}
+                        onClick={onOpenSettings}
+                        title="Settings & Tools"
+                    >
+                        <Settings size={15} />
+                    </button>
+                )}
                 {open && (
                     <div className="topbar-popover">
                         <div className="topbar-popover-title">

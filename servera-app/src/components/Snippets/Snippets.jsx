@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { MAIN_SESSION_ID } from '../../utils/terminal';
+import { formatRemoteError } from '../../utils/errors';
 import { Code2, Plus, Play, Trash2, Edit3, Save, X, Copy, Check, FolderOpen, Tag, Shield } from 'lucide-react';
 import './Snippets.css';
 
@@ -117,13 +118,7 @@ export default function Snippets() {
             });
             setOutput(result);
         } catch (err) {
-            const raw = String(err);
-            const msg = raw.includes('SUDO_PASSWORD_REQUIRED')
-                ? 'Sudo needs a password. Add one to this profile (Authentication → Sudo password) and reconnect, or disable "Run with sudo".'
-                : raw.includes('SUDO_PASSWORD_INCORRECT')
-                    ? 'The stored sudo password was rejected. Update it in the profile settings.'
-                    : 'Error: ' + raw;
-            setOutput(msg);
+            setOutput(formatRemoteError(err, `Running "${snippet.name}"`));
         } finally {
             setRunning(false);
         }

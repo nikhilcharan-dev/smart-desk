@@ -77,6 +77,14 @@ export default function TerminalPane({ sessionId, profile, isActive, onFocus, on
         // Clipboard integration: Ctrl+C copies selection (no SIGINT), Ctrl+V pastes
         term.attachCustomKeyEventHandler((e) => {
             if (e.type !== 'keydown') return true;
+
+            // Alt+V → Open Quick Secrets Vault directly from terminal pane
+            if (e.altKey && e.key.toLowerCase() === 'v') {
+                e.preventDefault();
+                window.dispatchEvent(new CustomEvent('open-quick-vault'));
+                return false;
+            }
+
             const ctrl = e.ctrlKey || e.metaKey;
             if (!ctrl) return true;
 

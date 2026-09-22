@@ -3,7 +3,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Box, Play, Square, RotateCcw, Trash2, RefreshCw, AlertCircle, Download, FileText, Layers, Terminal, X, ArrowDown, ArrowUp } from "lucide-react";
 import { MAIN_SESSION_ID } from "../../utils/terminal";
+import { formatRemoteError } from "../../utils/errors";
 import "./DockerManager.css";
+
+// Docker commands go down the plain channel WITHOUT a `sudo` prefix: a user in
+// the `docker` group needs none, and for everyone else the backend escalates by
+// itself once the socket refuses the connection. A hardcoded `sudo docker …`
+// broke the first group's hosts and, where sudo wants a password, both.
 
 // ─── Sub-components ──────────────────────────────────────────────────────────
 
@@ -19,13 +25,13 @@ function ContainerLogs({ containerId, containerName, onClose }) {
         try {
             const output = await invoke("exec_ssh_command", {
                 sessionId: MAIN_SESSION_ID,
-                command: `sudo docker logs --tail ${tail} ${containerId} 2>&1`
+                command: `docker logs --tail ${tail} ${containerId} 2>&1`
             });
             setLogLines(output.split('\n').filter(l => l.length > 0));
         } catch (err) {
-            setLogLines([`Error: ${err}`]);
+            setLogLines([formatRemoteError(err, `Reading logs for ${containerName}`)]);
         }
-    }, [containerId, tail]);
+    }, [containerId, containerName, tail]);
 
     useEffect(() => { fetchStaticLogs(); }, [fetchStaticLogs]);
 
@@ -147,7 +153,7 @@ export default function DockerManager() {
 
             const rawOutput = await invoke("exec_ssh_command", {
                 sessionId: MAIN_SESSION_ID,
-                command: `sudo docker ps -a --format "{{.ID}}|{{.Names}}|{{.Image}}|{{.State}}|{{.Status}}|{{.Ports}}"`
+                command: `docker ps -a --format "{{.ID}}|{{.Names}}|{{.Image}}|{{.State}}|{{.Status}}|{{.Ports}}"`
             });
 
             const parsed = rawOutput.split('\n')
@@ -159,7 +165,7 @@ export default function DockerManager() {
 
             setContainers(parsed);
         } catch (err) {
-            setError(err.toString());
+            setError(formatRemoteError(err, "Listing containers"));
         } finally {
             setLoading(false);
         }
@@ -198,11 +204,11 @@ export default function DockerManager() {
         try {
             await invoke("exec_ssh_command", {
                 sessionId: MAIN_SESSION_ID,
-                command: `sudo docker ${action} ${containerId}`
+                command: `docker ${action} ${containerId}`
             });
             setTimeout(fetchContainers, 1000);
         } catch (err) {
-            setError(`Failed to ${action} container: ` + err);
+            setError(formatRemoteError(err, `${action} of container ${containerId}`));
         } finally {
             setPendingAction(null);
         }
@@ -224,7 +230,7 @@ export default function DockerManager() {
         setComposeAction(`${dir}:${action}`);
         setError(null);
         try {
-            const composeCmd = `cd ${dir} && sudo docker compose ${action} 2>&1 || sudo docker-compose ${action} 2>&1`;
+            const composeCmd = `cd ${dir} && (docker compose ${action} || docker-compose ${action})`;
             await invoke("exec_ssh_command", {
                 sessionId: MAIN_SESSION_ID,
                 command: composeCmd
@@ -233,7 +239,7 @@ export default function DockerManager() {
                 setTimeout(fetchContainers, 2000);
             }
         } catch (err) {
-            setError(`Compose ${action} failed: ${err}`);
+            setError(formatRemoteError(err, `Compose ${action} in ${dir}`));
         } finally {
             setComposeAction(null);
         }
@@ -243,13 +249,15 @@ export default function DockerManager() {
         setInstalling(true);
         setError(null);
         try {
-            await invoke("exec_ssh_command", {
+            // Installing packages always needs root — go straight to the
+            // elevated path rather than failing once on the way there.
+            await invoke("exec_ssh_command_sudo", {
                 sessionId: MAIN_SESSION_ID,
-                command: "sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io docker-compose-plugin"
+                command: "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io docker-compose-plugin"
             });
             setTimeout(fetchContainers, 2000);
         } catch (err) {
-            setError(`Installation failed: ${err}`);
+            setError(formatRemoteError(err, "Installing Docker"));
             setInstalling(false);
         }
     };

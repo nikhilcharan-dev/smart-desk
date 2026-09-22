@@ -1,3 +1,4 @@
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
@@ -474,12 +475,21 @@ impl SshExecConn {
     /// Heuristic: does this failed result look like it failed for lack of
     /// privileges (rather than a genuine error)? Used to decide whether an
     /// auto-fallback escalation is worth attempting.
+    ///
+    /// Two distinct shapes count. The first is the command itself being refused
+    /// ("permission denied"). The second is a command that already contains its
+    /// own `sudo` — most of the manager panels build commands like
+    /// `sudo systemctl restart …` — failing because that inner sudo had no way
+    /// to ask for a password over a non-interactive channel. Both are fixed by
+    /// re-running through the elevation ladder, which supplies the password (or
+    /// NOPASSWD) that the bare attempt lacked.
     fn looks_like_permission_failure(out: &CmdOutput) -> bool {
         if out.code == 0 {
             return false;
         }
         let hay = format!("{}\n{}", out.stdout, out.stderr).to_lowercase();
         [
+            // Refused outright
             "permission denied",
             "operation not permitted",
             "must be root",
@@ -489,6 +499,14 @@ impl SshExecConn {
             "not permitted",
             "eacces",
             "eperm",
+            // systemd/polkit's way of saying "you are not root"
+            "interactive authentication required",
+            // An embedded sudo that could not prompt
+            "a password is required",
+            "a terminal is required",
+            "no tty present",
+            "askpass",
+            "sudo: a password",
         ]
         .iter()
         .any(|needle| hay.contains(needle))
@@ -591,12 +609,78 @@ impl SshExecConn {
         }
     }
 
+    // ── SFTP privilege fallback ───────────────────────────────────────────────
+    //
+    // The SFTP subsystem has no equivalent of sudo: it always acts as the login
+    // user, and a refused operation comes back as `[SFTP(3)] permission denied`
+    // with nothing further the protocol can try. Every SFTP entry point below
+    // therefore attempts the native operation first and, only when it is
+    // refused for lack of privileges, redoes the same work as an elevated shell
+    // command through the same `sudo -n` → `sudo -S` ladder the exec path uses.
+    // This keeps elevation automatic everywhere instead of depending on each
+    // caller to catch the denial and re-invoke a separate `*_sudo` command.
+
+    /// Does this error look like the remote refused the operation for lack of
+    /// privileges? libssh2 renders SSH_FX_PERMISSION_DENIED as `[SFTP(3)]`, and
+    /// the accompanying text varies by server, so match both shapes.
+    fn is_permission_error(err: &str) -> bool {
+        let hay = err.to_lowercase();
+        hay.contains("sftp(3)")
+            || hay.contains("permission denied")
+            || hay.contains("operation not permitted")
+            || hay.contains("access denied")
+            || hay.contains("eacces")
+            || hay.contains("eperm")
+    }
+
+    /// Whether escalation could plausibly help. Windows has no sudo, and a root
+    /// login has nothing to escalate to — in both cases the denial is final, and
+    /// retrying would only replace the real error with a confusing second one.
+    fn can_escalate(&self) -> bool {
+        self.remote_os != RemoteOs::Windows && !self.is_root
+    }
+
+    /// Run `primary`; if it is refused for lack of privileges and escalation is
+    /// possible, run `fallback` (the sudo-backed equivalent) instead. Any other
+    /// failure is returned untouched so genuine errors are not masked.
+    fn with_sudo_fallback<T>(
+        &self,
+        primary: impl FnOnce() -> Result<T, String>,
+        fallback: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        match primary() {
+            Ok(v) => Ok(v),
+            Err(e) if self.can_escalate() && Self::is_permission_error(&e) => fallback(),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Run an inner command elevated on Unix, plain on Windows (which has no
+    /// sudo but usually logs in with the privileges it needs).
+    fn run_elevated_or_plain(&self, cmd: &str) -> Result<String, String> {
+        match self.remote_os {
+            RemoteOs::Windows => self.exec_command(cmd),
+            _ => self.exec_command_sudo(cmd),
+        }
+    }
+
+    /// The login user's `user:group`, resolved WITHOUT elevation — under sudo
+    /// these would report root, which is never what the caller wants.
+    fn login_identity(&self) -> Result<String, String> {
+        let out = self.exec_command("printf '%s:%s' \"$(id -un)\" \"$(id -gn)\"")?;
+        let ident = out.trim().to_string();
+        if ident.is_empty() || ident == ":" {
+            return Err("Could not resolve the login user on the remote host".into());
+        }
+        Ok(ident)
+    }
+
     pub fn exec_zip(&self, src: &str, dest: &str) -> Result<String, String> {
         let cmd = match self.remote_os {
             RemoteOs::Windows => format!("powershell -NoProfile -Command \"Compress-Archive -Path {} -DestinationPath {} -Force\"", ps_escape(src), ps_escape(dest)),
             _ => format!("zip -r {} {}", shell_escape(dest), shell_escape(src)),
         };
-        self.exec_command(&cmd)
+        self.exec_command_auto(&cmd)
     }
 
     pub fn exec_unzip(&self, src: &str, dest: &str) -> Result<String, String> {
@@ -604,7 +688,7 @@ impl SshExecConn {
             RemoteOs::Windows => format!("powershell -NoProfile -Command \"Expand-Archive -Path {} -DestinationPath {} -Force\"", ps_escape(src), ps_escape(dest)),
             _ => format!("unzip {} -d {}", shell_escape(src), shell_escape(dest)),
         };
-        self.exec_command(&cmd)
+        self.exec_command_auto(&cmd)
     }
 
     // ── SFTP helpers (all use a caller-provided Sftp handle) ──────────────────
@@ -623,16 +707,63 @@ impl SshExecConn {
             };
             nodes.push(FileNode { name, path: file_path, is_dir: stat.is_dir(), size: stat.size.unwrap_or(0) });
         }
+        Self::sort_nodes(&mut nodes);
+        Ok(nodes)
+    }
+
+    /// Directories first, then case-insensitive by name.
+    fn sort_nodes(nodes: &mut [FileNode]) {
         nodes.sort_by(|a, b| {
             if a.is_dir == b.is_dir { a.name.to_lowercase().cmp(&b.name.to_lowercase()) }
             else { b.is_dir.cmp(&a.is_dir) }
         });
-        Ok(nodes)
     }
 
     pub fn sftp_list(&self, path: &str) -> Result<Vec<FileNode>, String> {
-        let sftp = self.session.sftp().map_err(|e| e.to_string())?;
-        Self::list_dir(&sftp, path)
+        self.with_sudo_fallback(
+            || {
+                let sftp = self.session.sftp().map_err(|e| e.to_string())?;
+                Self::list_dir(&sftp, path)
+            },
+            || self.list_dir_sudo(path),
+        )
+    }
+
+    /// Elevated listing for directories the login user cannot read (e.g. /root,
+    /// /etc/ssl/private). One shell command emits a `KIND|||size|||name` record
+    /// per entry — name last so that names containing `|||` survive the split —
+    /// and the full path is rebuilt here rather than on the remote.
+    fn list_dir_sudo(&self, path: &str) -> Result<Vec<FileNode>, String> {
+        if self.remote_os == RemoteOs::Windows {
+            return Err(format!("Cannot list {}: permission denied", path));
+        }
+        // Trailing slashes are stripped so "/" becomes "" and children join as
+        // "/name" rather than "//name", which POSIX leaves implementation-defined.
+        let base = path.trim_end_matches('/');
+        let cmd = format!(
+            "d={}; ls -A -- \"$d/\" | while IFS= read -r n; do f=\"$d/$n\"; \
+             if [ -d \"$f\" ]; then printf 'D|||0|||%s\\n' \"$n\"; \
+             else sz=$(stat -c%s \"$f\" 2>/dev/null || stat -f%z \"$f\" 2>/dev/null || echo 0); \
+             printf 'F|||%s|||%s\\n' \"$sz\" \"$n\"; fi; done",
+            shell_escape(base)
+        );
+        let output = self.exec_command_sudo(&cmd)?;
+        let mut nodes = Vec::new();
+        for line in output.lines() {
+            let mut parts = line.splitn(3, "|||");
+            let kind = parts.next().unwrap_or("");
+            let size = parts.next().unwrap_or("0").trim().parse::<u64>().unwrap_or(0);
+            let name = parts.next().unwrap_or("").to_string();
+            if name.is_empty() || name == "." || name == ".." { continue; }
+            nodes.push(FileNode {
+                path: format!("{}/{}", base, name),
+                name,
+                is_dir: kind == "D",
+                size,
+            });
+        }
+        Self::sort_nodes(&mut nodes);
+        Ok(nodes)
     }
 
     /// Recursively search for files/folders under `path` whose name contains `query`
@@ -677,23 +808,54 @@ impl SshExecConn {
     }
 
     pub fn sftp_read(&self, path: &str) -> Result<Vec<u8>, String> {
-        let sftp = self.session.sftp().map_err(|e| e.to_string())?;
-        let mut file = sftp.open(Path::new(path)).map_err(|e| e.to_string())?;
-        let mut content = Vec::new();
-        file.read_to_end(&mut content).map_err(|e| e.to_string())?;
-        Ok(content)
+        self.with_sudo_fallback(
+            || {
+                let sftp = self.session.sftp().map_err(|e| e.to_string())?;
+                let mut file = sftp.open(Path::new(path)).map_err(|e| e.to_string())?;
+                let mut content = Vec::new();
+                file.read_to_end(&mut content).map_err(|e| e.to_string())?;
+                Ok(content)
+            },
+            || self.sftp_read_sudo(path),
+        )
+    }
+
+    /// Elevated read. The command channel is a text stream, so the bytes come
+    /// back base64-encoded to survive binary content and any locale mangling.
+    fn sftp_read_sudo(&self, path: &str) -> Result<Vec<u8>, String> {
+        if self.remote_os == RemoteOs::Windows {
+            return Err(format!("Cannot read {}: permission denied", path));
+        }
+        let encoded = self.exec_command_sudo(&format!("base64 {}", shell_escape(path)))?;
+        let stripped: String = encoded.chars().filter(|c| !c.is_whitespace()).collect();
+        base64::engine::general_purpose::STANDARD
+            .decode(stripped)
+            .map_err(|e| format!("Could not decode elevated read of {}: {}", path, e))
     }
 
     pub fn sftp_exists(&self, path: &str) -> bool {
-        self.session.sftp()
-            .and_then(|sftp| sftp.stat(Path::new(path)))
-            .is_ok()
+        match self.session.sftp().and_then(|sftp| sftp.stat(Path::new(path))) {
+            Ok(_) => true,
+            // A denied stat says nothing about existence. Callers use this for
+            // overwrite checks, so fall back to an elevated test rather than
+            // reporting a protected path as free and silently clobbering it.
+            Err(e) if self.can_escalate() && Self::is_permission_error(&e.to_string()) => self
+                .exec_command_sudo(&format!("test -e {} && echo yes", shell_escape(path)))
+                .map(|out| out.trim() == "yes")
+                .unwrap_or(false),
+            Err(_) => false,
+        }
     }
 
     pub fn sftp_write(&self, path: &str, content: &[u8]) -> Result<(), String> {
-        let sftp = self.session.sftp().map_err(|e| e.to_string())?;
-        let mut file = sftp.create(Path::new(path)).map_err(|e| e.to_string())?;
-        file.write_all(content).map_err(|e| e.to_string())
+        self.with_sudo_fallback(
+            || {
+                let sftp = self.session.sftp().map_err(|e| e.to_string())?;
+                let mut file = sftp.create(Path::new(path)).map_err(|e| e.to_string())?;
+                file.write_all(content).map_err(|e| e.to_string())
+            },
+            || self.sftp_write_sudo(path, content),
+        )
     }
 
     pub fn sftp_write_sudo(&self, path: &str, content: &[u8]) -> Result<(), String> {
@@ -726,17 +888,38 @@ impl SshExecConn {
     }
 
     pub fn sftp_rename(&self, old_path: &str, new_path: &str) -> Result<(), String> {
-        let sftp = self.session.sftp().map_err(|e| e.to_string())?;
-        sftp.rename(Path::new(old_path), Path::new(new_path), None).map_err(|e| e.to_string())
+        self.with_sudo_fallback(
+            || {
+                let sftp = self.session.sftp().map_err(|e| e.to_string())?;
+                sftp.rename(Path::new(old_path), Path::new(new_path), None).map_err(|e| e.to_string())
+            },
+            || {
+                let cmd = match self.remote_os {
+                    RemoteOs::Windows => format!(
+                        "powershell -NoProfile -Command \"Move-Item -LiteralPath {} -Destination {} -Force\"",
+                        ps_escape(old_path), ps_escape(new_path)
+                    ),
+                    _ => format!("mv -f {} {}", shell_escape(old_path), shell_escape(new_path)),
+                };
+                self.run_elevated_or_plain(&cmd).map(|_| ())
+            },
+        )
     }
 
     pub fn sftp_delete(&self, path: &str, is_dir: bool) -> Result<(), String> {
-        let sftp = self.session.sftp().map_err(|e| format!("SFTP error: {}", e))?;
-        if is_dir {
-            self.do_sftp_delete_recursive(&sftp, path)
-        } else {
-            sftp.unlink(Path::new(path)).map_err(|e| format!("Unlink failed: {}", e))
-        }
+        self.with_sudo_fallback(
+            || {
+                let sftp = self.session.sftp().map_err(|e| format!("SFTP error: {}", e))?;
+                if is_dir {
+                    self.do_sftp_delete_recursive(&sftp, path)
+                } else {
+                    sftp.unlink(Path::new(path)).map_err(|e| format!("Unlink failed: {}", e))
+                }
+            },
+            // A recursive delete can be denied partway through; the elevated
+            // `rm -rf` below removes whatever the first pass left behind.
+            || self.sftp_delete_sudo(path, is_dir),
+        )
     }
 
     fn do_sftp_delete_recursive(&self, sftp: &Sftp, path: &str) -> Result<(), String> {
@@ -752,13 +935,41 @@ impl SshExecConn {
     }
 
     pub fn sftp_create_dir(&self, path: &str) -> Result<(), String> {
-        let sftp = self.session.sftp().map_err(|e| e.to_string())?;
-        sftp.mkdir(Path::new(path), 0o755).map_err(|e| e.to_string())
+        self.with_sudo_fallback(
+            || {
+                let sftp = self.session.sftp().map_err(|e| e.to_string())?;
+                sftp.mkdir(Path::new(path), 0o755).map_err(|e| e.to_string())
+            },
+            || {
+                let cmd = match self.remote_os {
+                    RemoteOs::Windows => format!(
+                        "powershell -NoProfile -Command \"New-Item -ItemType Directory -Path {} -Force\"",
+                        ps_escape(path)
+                    ),
+                    _ => format!("mkdir -p {}", shell_escape(path)),
+                };
+                self.run_elevated_or_plain(&cmd).map(|_| ())
+            },
+        )
     }
 
     pub fn sftp_create_file(&self, path: &str) -> Result<(), String> {
-        let sftp = self.session.sftp().map_err(|e| e.to_string())?;
-        sftp.create(Path::new(path)).map_err(|e| e.to_string()).map(|_| ())
+        self.with_sudo_fallback(
+            || {
+                let sftp = self.session.sftp().map_err(|e| e.to_string())?;
+                sftp.create(Path::new(path)).map_err(|e| e.to_string()).map(|_| ())
+            },
+            || {
+                let cmd = match self.remote_os {
+                    RemoteOs::Windows => format!(
+                        "powershell -NoProfile -Command \"New-Item -ItemType File -Path {} -Force\"",
+                        ps_escape(path)
+                    ),
+                    _ => format!("touch {}", shell_escape(path)),
+                };
+                self.run_elevated_or_plain(&cmd).map(|_| ())
+            },
+        )
     }
 
     pub fn sftp_delete_sudo(&self, path: &str, is_dir: bool) -> Result<(), String> {
@@ -779,10 +990,7 @@ impl SshExecConn {
             }
         };
         // Windows uses PowerShell (no sudo); Unix escalates through sudo.
-        match self.remote_os {
-            RemoteOs::Windows => self.exec_command(&cmd).map(|_| ()),
-            _ => self.exec_command_sudo(&cmd).map(|_| ()),
-        }
+        self.run_elevated_or_plain(&cmd).map(|_| ())
     }
 
     pub fn get_user_info(&self) -> Result<String, String> {
@@ -795,7 +1003,10 @@ impl SshExecConn {
     pub fn sftp_get_permissions(&self, path: &str) -> Result<String, String> {
         match self.remote_os {
             RemoteOs::Windows => self.exec_command(&format!("powershell -NoProfile -Command \"Get-Item {} | Select-Object Mode, LastWriteTime, Length, Name | Out-String\"", ps_escape(path))),
-            _ => self.exec_command(&format!("ls -ld {}", shell_escape(path))),
+            // Auto-elevating: stat'ing an item inside a directory the login user
+            // cannot traverse is itself denied, and that is exactly the case the
+            // permissions dialog exists to inspect.
+            _ => self.exec_command_auto(&format!("ls -ld {}", shell_escape(path))),
         }
     }
 
@@ -811,20 +1022,33 @@ impl SshExecConn {
                 self.exec_command(&cmd)
             }
             _ => {
-                // (inner command, needs elevation). `own`/`sudoer` change
-                // ownership / group membership, which require root; run them
-                // through the password-aware sudo path.
-                let (cmd, needs_sudo) = match action {
+                // (inner command, always elevate). `own`/`sudoer` change
+                // ownership / group membership, which require root outright.
+                // The `chmod`s are attempted plain first and escalate only if
+                // denied — changing the mode of a file you do not own needs root
+                // too, which is the usual reason this dialog is open.
+                // `$USER` cannot be left for the remote shell to expand: sudo
+                // sets it to the target user, so `chown $USER` under sudo would
+                // hand the file to root — the opposite of what "take ownership"
+                // means. Resolve the login identity unelevated and inline it.
+                let (cmd, always_sudo) = match action {
                     "exec" => (format!("chmod +x {}", shell_escape(path)), false),
                     "full" => (format!("chmod 777 {}", shell_escape(path)), false),
-                    "own" => (format!("chown $USER:$USER {}", shell_escape(path)), true),
-                    "sudoer" => ("usermod -aG sudo $USER || usermod -aG wheel $USER".to_string(), true),
+                    "own" => {
+                        let who = self.login_identity()?;
+                        (format!("chown {} {}", shell_escape(&who), shell_escape(path)), true)
+                    }
+                    "sudoer" => {
+                        let user = self.exec_command("id -un")?.trim().to_string();
+                        let u = shell_escape(&user);
+                        (format!("usermod -aG sudo {0} || usermod -aG wheel {0}", u), true)
+                    }
                     _ => return Err("Invalid upgrade action".into()),
                 };
-                if needs_sudo {
+                if always_sudo {
                     self.exec_command_sudo(&cmd)
                 } else {
-                    self.exec_command(&cmd)
+                    self.exec_command_auto(&cmd)
                 }
             }
         }
@@ -838,13 +1062,20 @@ impl SshExecConn {
     pub fn sftp_upload(&self, app: &AppHandle, local_path: &str, remote_path: &str) -> Result<(), String> {
         let path = Path::new(local_path);
         let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
-        let sftp = self.session.sftp().map_err(|e| e.to_string())?;
-        let result = if path.is_dir() {
-            self.do_sftp_upload_recursive(app, &sftp, local_path, remote_path, &name)
-        } else {
-            self.do_sftp_upload_file(app, &sftp, local_path, remote_path, &name, &name)
-        };
-        // sftp is dropped here — single clean shutdown
+        let result = self.with_sudo_fallback(
+            || {
+                let sftp = self.session.sftp().map_err(|e| e.to_string())?;
+                let r = if path.is_dir() {
+                    self.do_sftp_upload_recursive(app, &sftp, local_path, remote_path, &name)
+                } else {
+                    self.do_sftp_upload_file(app, &sftp, local_path, remote_path, &name, &name)
+                };
+                // sftp is dropped here — single clean shutdown
+                r
+            },
+            // Denied destination: stage in /tmp and move into place elevated.
+            || self.sftp_upload_sudo(app, local_path, remote_path),
+        );
         if let Err(ref e) = result {
             let _ = app.emit("transfer-progress", serde_json::json!({
                 "root_name": name, "filename": name, "status": "error",
@@ -883,15 +1114,35 @@ impl SshExecConn {
             return result;
         }
 
-        // Move from temp to final destination with elevation
+        // Move from temp to final destination with elevation.
+        //
+        // Directories are merged into the destination rather than moved onto it:
+        // `mv dirA dirB` puts dirA *inside* dirB when dirB already exists, and it
+        // often does — either from an earlier upload or from the plain attempt
+        // that created the directory before being denied further down the tree.
+        let is_dir = path.is_dir();
         let (mv_cmd, rm_cmd) = match self.remote_os {
             RemoteOs::Windows => (
-                format!("powershell -NoProfile -Command \"Move-Item -Path {} -Destination {} -Force\"", ps_escape(&temp_remote), ps_escape(remote_path)),
+                if is_dir {
+                    format!(
+                        "powershell -NoProfile -Command \"New-Item -ItemType Directory -Path {0} -Force | Out-Null; Copy-Item -Path {1} -Destination {0} -Recurse -Force\"",
+                        ps_escape(remote_path), ps_escape(&format!("{}\\*", temp_remote))
+                    )
+                } else {
+                    format!("powershell -NoProfile -Command \"Move-Item -Path {} -Destination {} -Force\"", ps_escape(&temp_remote), ps_escape(remote_path))
+                },
                 format!("powershell -NoProfile -Command \"Remove-Item -Path {} -Recurse -Force\"", ps_escape(&temp_remote))
             ),
             _ => (
                 // Inner command only — exec_command_sudo adds the elevation.
-                format!("mv -f {} {}", shell_escape(&temp_remote), shell_escape(remote_path)),
+                if is_dir {
+                    format!(
+                        "mkdir -p {dest} && cp -a {tmp}/. {dest}/",
+                        dest = shell_escape(remote_path), tmp = shell_escape(&temp_remote)
+                    )
+                } else {
+                    format!("mv -f {} {}", shell_escape(&temp_remote), shell_escape(remote_path))
+                },
                 format!("rm -rf {}", shell_escape(&temp_remote))
             )
         };
@@ -907,6 +1158,12 @@ impl SshExecConn {
                 "details": format!("Elevated move failed: {}", e), "error": e.to_string()
             }));
             return Err(format!("Elevated move failed: {}", e));
+        }
+
+        // A directory was copied, not moved, so the staging tree is still there.
+        // It may now be root-owned, hence the elevated removal.
+        if is_dir {
+            let _ = self.run_elevated_or_plain(&rm_cmd);
         }
 
         let _ = app.emit("transfer-progress", serde_json::json!({
@@ -998,22 +1255,56 @@ impl SshExecConn {
     /// for the entire operation.
     pub fn sftp_download(&self, app: &AppHandle, remote_path: &str, local_path: &str) -> Result<(), String> {
         let name = Path::new(remote_path).file_name().unwrap_or_default().to_string_lossy().to_string();
-        let result = (|| -> Result<(), String> {
-            let sftp = self.session.sftp().map_err(|e| e.to_string())?;
-            let stat = sftp.stat(Path::new(remote_path)).map_err(|e| e.to_string())?;
-            if stat.is_dir() {
-                self.do_sftp_download_recursive(app, &sftp, remote_path, local_path, &name)
-            } else {
-                self.do_sftp_download_file(app, &sftp, remote_path, local_path, &name, &name, stat.size.unwrap_or(0))
-            }
-            // sftp dropped here — single clean shutdown
-        })();
+        let result = self.with_sudo_fallback(
+            || self.do_sftp_download(app, remote_path, local_path, &name),
+            || self.sftp_download_sudo(app, remote_path, local_path, &name),
+        );
         if let Err(ref e) = result {
             let _ = app.emit("transfer-progress", serde_json::json!({
                 "root_name": name, "filename": name, "status": "error",
                 "details": format!("Download failed: {}", e), "error": e.to_string()
             }));
         }
+        result
+    }
+
+    fn do_sftp_download(&self, app: &AppHandle, remote_path: &str, local_path: &str, name: &str) -> Result<(), String> {
+        let sftp = self.session.sftp().map_err(|e| e.to_string())?;
+        let stat = sftp.stat(Path::new(remote_path)).map_err(|e| e.to_string())?;
+        if stat.is_dir() {
+            self.do_sftp_download_recursive(app, &sftp, remote_path, local_path, name)
+        } else {
+            self.do_sftp_download_file(app, &sftp, remote_path, local_path, name, name, stat.size.unwrap_or(0))
+        }
+        // sftp dropped here — single clean shutdown
+    }
+
+    /// Download a source the login user cannot read: copy it to a staging area
+    /// under /tmp as root, hand ownership to the login user, then pull it over
+    /// SFTP normally. The staging copy is always removed, success or not.
+    fn sftp_download_sudo(&self, app: &AppHandle, remote_path: &str, local_path: &str, name: &str) -> Result<(), String> {
+        if self.remote_os == RemoteOs::Windows {
+            return Err(format!("Cannot read {}: permission denied", remote_path));
+        }
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
+        let staging = format!("/tmp/servera_dl_{}", timestamp);
+        let owner = self.login_identity()?;
+
+        // -a preserves the tree; the chown/chmod is what makes the copy
+        // readable over SFTP, which still runs as the unprivileged login user.
+        let prepare = format!(
+            "mkdir -p {s} && cp -a {src} {s}/ && chown -R {o} {s} && chmod -R u+rwX {s}",
+            s = shell_escape(&staging),
+            src = shell_escape(remote_path),
+            o = shell_escape(&owner),
+        );
+        self.exec_command_sudo(&prepare)
+            .map_err(|e| format!("Could not stage {} for download: {}", remote_path, e))?;
+
+        let staged = format!("{}/{}", staging, name);
+        let result = self.do_sftp_download(app, &staged, local_path, name);
+        let _ = self.exec_command_sudo(&format!("rm -rf {}", shell_escape(&staging)));
         result
     }
 

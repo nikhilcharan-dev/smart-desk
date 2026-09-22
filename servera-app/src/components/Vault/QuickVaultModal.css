@@ -1,0 +1,385 @@
+/* ============================================================
+   QuickVaultModal.css — Spotlight / Raycast Style Quick Vault
+   ============================================================ */
+
+.qv-backdrop {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(5, 7, 12, 0.75);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding-top: 12vh;
+    z-index: 9999;
+    animation: qvFadeIn 0.15s ease-out;
+}
+
+@keyframes qvFadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+.qv-modal {
+    width: 640px;
+    max-width: 92vw;
+    background: #141824;
+    border: 1px solid rgba(79, 124, 255, 0.25);
+    border-radius: 16px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.05);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    animation: qvScaleIn 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes qvScaleIn {
+    from { transform: scale(0.96) translateY(-10px); opacity: 0; }
+    to { transform: scale(1) translateY(0); opacity: 1; }
+}
+
+/* Header & Search Bar */
+.qv-header {
+    display: flex;
+    align-items: center;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+    gap: 12px;
+    background: rgba(20, 24, 36, 0.8);
+}
+
+.qv-search-icon {
+    color: var(--text-muted);
+    flex-shrink: 0;
+}
+
+.qv-input {
+    flex: 1;
+    background: transparent;
+    border: none;
+    outline: none;
+    font-size: 15px;
+    font-family: var(--font-ui);
+    color: var(--text-main);
+}
+
+.qv-input::placeholder {
+    color: #616882;
+}
+
+.qv-badge-hint {
+    font-size: 11px;
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--border);
+    padding: 2px 6px;
+    border-radius: 5px;
+}
+
+.qv-close-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 4px;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s ease;
+}
+
+.qv-close-btn:hover {
+    color: var(--text-main);
+    background: rgba(255, 255, 255, 0.08);
+}
+
+/* Category Filter Pills */
+.qv-categories {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 10px 18px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    overflow-x: auto;
+    background: rgba(13, 15, 20, 0.4);
+}
+
+.qv-categories::-webkit-scrollbar {
+    display: none;
+}
+
+.qv-category-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-muted);
+    background: transparent;
+    border: 1px solid transparent;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    white-space: nowrap;
+}
+
+.qv-category-pill:hover {
+    color: var(--text-main);
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.qv-category-pill.active {
+    color: #fff;
+    background: rgba(79, 124, 255, 0.15);
+    border-color: rgba(79, 124, 255, 0.4);
+}
+
+/* Secrets List */
+.qv-list {
+    max-height: 380px;
+    overflow-y: auto;
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.qv-list::-webkit-scrollbar {
+    width: 6px;
+}
+
+.qv-list::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 3px;
+}
+
+.qv-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 45px 20px;
+    text-align: center;
+    gap: 12px;
+}
+
+.qv-empty-icon {
+    color: #3b4258;
+}
+
+.qv-empty-text {
+    font-size: 14px;
+    color: var(--text-muted);
+}
+
+.qv-add-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 14px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 500;
+    color: #fff;
+    background: var(--accent-primary);
+    border: none;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.qv-add-btn:hover {
+    background: #3d68e6;
+}
+
+/* Item Row */
+.qv-item {
+    display: flex;
+    align-items: center;
+    padding: 10px 14px;
+    border-radius: 10px;
+    gap: 12px;
+    cursor: pointer;
+    background: transparent;
+    border: 1px solid transparent;
+    transition: all 0.12s ease;
+}
+
+.qv-item:hover,
+.qv-item.active {
+    background: rgba(79, 124, 255, 0.08);
+    border-color: rgba(79, 124, 255, 0.25);
+}
+
+.qv-item.copied {
+    background: rgba(32, 190, 56, 0.12);
+    border-color: rgba(32, 190, 56, 0.4);
+}
+
+.qv-item-icon-wrapper {
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.04);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.qv-item-info {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.qv-item-title-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.qv-item-title {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-main);
+}
+
+.qv-item-account,
+.qv-item-host {
+    font-size: 12px;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+}
+
+.qv-item-secret-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.qv-item-secret-preview {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: #7b829c;
+    letter-spacing: 1px;
+    max-width: 260px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.qv-item-tags {
+    display: flex;
+    gap: 4px;
+}
+
+.qv-tag {
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--text-muted);
+}
+
+/* Actions */
+.qv-item-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+.qv-action-btn {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    transition: all 0.15s ease;
+}
+
+.qv-action-btn:hover {
+    color: var(--text-main);
+    background: rgba(255, 255, 255, 0.1);
+    border-color: rgba(255, 255, 255, 0.2);
+}
+
+.qv-copy-btn {
+    color: #fff;
+    background: rgba(79, 124, 255, 0.2);
+    border-color: rgba(79, 124, 255, 0.4);
+}
+
+.qv-copy-btn:hover {
+    background: var(--accent-primary);
+    border-color: var(--accent-primary);
+}
+
+.qv-copy-btn.success {
+    background: rgba(32, 190, 56, 0.25);
+    border-color: var(--accent-success);
+    color: var(--accent-success);
+}
+
+/* Footer Bar */
+.qv-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 18px;
+    border-top: 1px solid var(--border);
+    background: rgba(13, 15, 20, 0.6);
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.qv-footer-hints {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.qv-footer-hints kbd {
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 5px;
+    font-size: 10px;
+    font-family: var(--font-mono);
+    color: var(--text-main);
+    margin-right: 4px;
+}
+
+.qv-footer-link {
+    background: transparent;
+    border: none;
+    color: var(--accent-primary);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    padding: 2px 4px;
+    transition: all 0.15s ease;
+}
+
+.qv-footer-link:hover {
+    text-decoration: underline;
+    color: #7095ff;
+}

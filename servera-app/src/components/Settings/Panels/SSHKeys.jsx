@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Key, Plus, Trash2, RefreshCw, AlertCircle, CheckCircle2, Copy } from "lucide-react";
 import { MAIN_SESSION_ID } from "../../../utils/terminal";
+import { formatRemoteError } from "../../../utils/errors";
 import "./SettingsPanels.css";
 
 export default function SSHKeys() {
@@ -45,7 +46,7 @@ export default function SSHKeys() {
 
             setKeys(parsed);
         } catch (err) {
-            setError(err.toString());
+            setError(formatRemoteError(err, "Reading authorized_keys"));
         } finally {
             setLoading(false);
         }
@@ -81,7 +82,7 @@ export default function SSHKeys() {
             setNewKey("");
             fetchKeys();
         } catch (err) {
-            setAddStatus({ type: 'error', msg: err.toString() });
+            setAddStatus({ type: 'error', msg: formatRemoteError(err, "Adding the key") });
             setLoading(false);
         }
     };
@@ -101,7 +102,7 @@ export default function SSHKeys() {
             });
             fetchKeys();
         } catch (err) {
-            setError("Failed to remove key: " + err);
+            setError(formatRemoteError(err, "Removing the key"));
             setLoading(false);
         }
     };

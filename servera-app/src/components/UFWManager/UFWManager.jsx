@@ -2,7 +2,16 @@ import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Shield, ShieldAlert, ShieldCheck, Plus, Trash2, RefreshCw, AlertCircle, Info, Download } from "lucide-react";
 import { MAIN_SESSION_ID } from "../../utils/terminal";
+import { formatRemoteError } from "../../utils/errors";
 import "./UFWManager.css";
+
+// Every ufw operation needs root, so these go through the backend's always-
+// elevate command: `sudo -n` first, then the profile's stored sudo password.
+// The commands themselves carry no `sudo` prefix — a literal `sudo ufw …` sent
+// down the plain channel just fails with "no tty present" on any host whose
+// sudo asks for a password, which is what made this panel unusable there.
+const runElevated = (command) =>
+    invoke("exec_ssh_command_sudo", { sessionId: MAIN_SESSION_ID, command });
 
 export default function UFWManager() {
     const [status, setStatus] = useState("checking"); // 'active' | 'inactive' | 'checking' | 'error'
@@ -37,11 +46,7 @@ export default function UFWManager() {
             setMissingUfw(false);
 
             // Get status and numbered rules
-            // stderr redirected to stdout just in case it fails due to permissions
-            const rawOutput = await invoke("exec_ssh_command", {
-                sessionId: MAIN_SESSION_ID,
-                command: "sudo ufw status numbered 2>&1"
-            });
+            const rawOutput = await runElevated("ufw status numbered");
 
             if (rawOutput.includes("inactive")) {
                 setStatus("inactive");
@@ -85,11 +90,10 @@ export default function UFWManager() {
                 }
                 setRules(parsedRules);
             } else {
-                // E.g. permission denied or other error
-                throw new Error("Could not read UFW status. Does the user have sudo privileges without a password prompt?");
+                throw new Error(`Unexpected output from ufw: ${rawOutput.trim().slice(0, 200)}`);
             }
         } catch (err) {
-            setError(err.toString());
+            setError(formatRemoteError(err, "Reading the firewall status"));
             setStatus("error");
         } finally {
             setLoading(false);
@@ -107,14 +111,10 @@ export default function UFWManager() {
 
         setLoading(true);
         try {
-            const cmd = status === 'active' ? 'sudo ufw disable' : 'sudo ufw --force enable';
-            await invoke("exec_ssh_command", {
-                sessionId: MAIN_SESSION_ID,
-                command: cmd
-            });
+            await runElevated(status === 'active' ? 'ufw disable' : 'ufw --force enable');
             setTimeout(fetchUfw, 1000);
         } catch (err) {
-            setError("Failed to toggle UFW: " + err);
+            setError(formatRemoteError(err, `${status === 'active' ? 'Disabling' : 'Enabling'} the firewall`));
             setLoading(false);
         }
     };
@@ -123,13 +123,10 @@ export default function UFWManager() {
         setInstalling(true);
         setError(null);
         try {
-            await invoke("exec_ssh_command", {
-                sessionId: MAIN_SESSION_ID,
-                command: "sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ufw"
-            });
+            await runElevated("apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y ufw");
             setTimeout(fetchUfw, 2000);
         } catch (err) {
-            setError(`Installation failed: ${err}`);
+            setError(formatRemoteError(err, "Installing ufw"));
             setInstalling(false);
         }
     };
@@ -139,15 +136,12 @@ export default function UFWManager() {
         setLoading(true);
         try {
             const ruleTarget = newProto === 'any' ? newPort : `${newPort}/${newProto}`;
-            await invoke("exec_ssh_command", {
-                sessionId: MAIN_SESSION_ID,
-                command: `sudo ufw ${newAction} ${ruleTarget}`
-            });
+            await runElevated(`ufw ${newAction} ${ruleTarget}`);
             setIsAdding(false);
             setNewPort("");
             setTimeout(fetchUfw, 1000);
         } catch (err) {
-            setError("Failed to add rule: " + err);
+            setError(formatRemoteError(err, `Adding the ${newAction} rule`));
             setLoading(false);
         }
     };
@@ -157,13 +151,10 @@ export default function UFWManager() {
         setLoading(true);
         try {
             // Using --force to bypass confirmation prompt of ufw delete
-            await invoke("exec_ssh_command", {
-                sessionId: MAIN_SESSION_ID,
-                command: `sudo ufw --force delete ${id}`
-            });
+            await runElevated(`ufw --force delete ${id}`);
             setTimeout(fetchUfw, 1000);
         } catch (err) {
-            setError("Failed to delete rule: " + err);
+            setError(formatRemoteError(err, `Deleting rule [${id}]`));
             setLoading(false);
         }
     };

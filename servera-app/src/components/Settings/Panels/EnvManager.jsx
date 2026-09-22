@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Database, Plus, RefreshCw, AlertCircle, Save, Variable } from "lucide-react";
 import { MAIN_SESSION_ID } from "../../../utils/terminal";
+import { formatRemoteError } from "../../../utils/errors";
 import "./SettingsPanels.css";
 
 export default function EnvManager() {
@@ -37,7 +38,7 @@ export default function EnvManager() {
 
             setEnvVars(parsed);
         } catch (err) {
-            setError(err.toString());
+            setError(formatRemoteError(err, "Reading the environment"));
         } finally {
             setLoading(false);
         }
@@ -82,7 +83,7 @@ export default function EnvManager() {
 
             alert(`Added export ${safeKey} to ~/.bashrc. Note: This will only affect new SSH sessions.`);
         } catch (err) {
-            setError("Failed to add environment variable: " + err);
+            setError(formatRemoteError(err, `Adding ${safeKey} to ~/.bashrc`));
         } finally {
             setLoading(false);
         }

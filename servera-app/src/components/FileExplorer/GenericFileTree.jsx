@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { MAIN_SESSION_ID } from "../../utils/terminal";
+import { formatRemoteError } from "../../utils/errors";
 import { Folder, File, ArrowUp, RefreshCw, Plus, Monitor, Search, X, ChevronRight, Shield, CornerDownLeft, Pin, Check } from "lucide-react";
 import "./FileExplorer.css";
 import FileContextMenu from "./FileContextMenu";
@@ -101,7 +102,7 @@ export default function GenericFileTree({ mode = 'sftp', initialPath = "/", prof
             setFiles(res);
         } catch (err) {
             console.error(`Failed to load ${mode} files:`, err);
-            setError(err.toString());
+            setError(formatRemoteError(err, `Listing ${path}`));
         } finally {
             setLoading(false);
         }
@@ -264,7 +265,7 @@ export default function GenericFileTree({ mode = 'sftp', initialPath = "/", prof
                                     await invoke(command, args);
                                     loadFiles(currentPath);
                                 } catch (err) {
-                                    showAlert("Error", "Move failed: " + err);
+                                    showAlert("Error", formatRemoteError(err, `Moving ${data.name}`));
                                 }
                             }
                         },
@@ -384,7 +385,7 @@ export default function GenericFileTree({ mode = 'sftp', initialPath = "/", prof
                 await invoke(command, args);
                 loadFiles(currentPath);
             } catch (err) {
-                showAlert("Error", "Rename failed: " + err);
+                showAlert("Error", formatRemoteError(err, `Renaming ${file.name}`));
             }
         });
     }, [mode, currentPath, loadFiles, showPrompt, showAlert, getParentDir]);
@@ -401,31 +402,9 @@ export default function GenericFileTree({ mode = 'sftp', initialPath = "/", prof
                 if (selectedFile?.path === file.path) setSelectedFile(null);
                 loadFiles(currentPath);
             } catch (err) {
-                if (mode === 'sftp') {
-                    setModal({
-                        isOpen: true,
-                        title: "Permission Denied",
-                        type: "confirm",
-                        confirmText: "Retry with Sudo",
-                        children: `Delete failed: ${err}\n\nRetry with sudo (requires passwordless sudo on the server)?`,
-                        onConfirm: async () => {
-                            setModal(prev => ({ ...prev, isOpen: false }));
-                            try {
-                                await invoke("sftp_delete_sudo", { 
-                                    sessionId: MAIN_SESSION_ID, 
-                                    path: file.path, 
-                                    isDir: file.is_dir 
-                                });
-                                if (selectedFile?.path === file.path) setSelectedFile(null);
-                                loadFiles(currentPath);
-                            } catch (sudoErr) {
-                                showAlert("Sudo Error", "Sudo delete failed: " + sudoErr);
-                            }
-                        }
-                    });
-                } else {
-                    showAlert("Error", "Delete failed: " + err);
-                }
+                // No "retry with sudo" prompt: `sftp_delete` already escalates
+                // on the backend when the unprivileged delete is refused.
+                showAlert("Error", formatRemoteError(err, `Deleting ${file.name}`));
             }
         });
     }, [mode, currentPath, selectedFile, loadFiles, showConfirm, showAlert]);
@@ -528,7 +507,7 @@ export default function GenericFileTree({ mode = 'sftp', initialPath = "/", prof
                 await invoke(command, args);
                 loadFiles(currentPath);
             } catch (err) {
-                showAlert("Error", `Failed to create ${type}: ` + err);
+                showAlert("Error", formatRemoteError(err, `Creating ${type} ${name}`));
             }
         });
     };
@@ -549,7 +528,7 @@ export default function GenericFileTree({ mode = 'sftp', initialPath = "/", prof
             showAlert("Success", "Compression started/finished.");
             loadFiles(currentPath);
         } catch (err) {
-            showAlert("Error", "Zip failed: " + err);
+            showAlert("Error", formatRemoteError(err, `Compressing ${file.name}`));
         }
     };
 
@@ -565,7 +544,7 @@ export default function GenericFileTree({ mode = 'sftp', initialPath = "/", prof
             showAlert("Success", "Extraction started/finished.");
             loadFiles(currentPath);
         } catch (err) {
-            showAlert("Error", "Unzip failed: " + err);
+            showAlert("Error", formatRemoteError(err, `Extracting ${file.name}`));
         }
     };
 
@@ -591,7 +570,7 @@ export default function GenericFileTree({ mode = 'sftp', initialPath = "/", prof
                 });
             }
         } catch (err) {
-            showAlert("Error", "Download failed: " + err);
+            showAlert("Error", formatRemoteError(err, `Downloading ${file.name}`));
         }
     };
 

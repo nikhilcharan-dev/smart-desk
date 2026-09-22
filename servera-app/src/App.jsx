@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { LayoutDashboard, FolderOpen, Terminal as TerminalIcon, Monitor, LogOut, Settings, Cpu, Network, ScrollText, Code2, Command as CommandIcon, Box, Shield, PackageOpen, RefreshCw, ShieldCheck, Sparkles, Palette } from "lucide-react";
+import { LayoutDashboard, FolderOpen, Terminal as TerminalIcon, Monitor, LogOut, Cpu, Network, ScrollText, Code2, Box, Shield, PackageOpen, RefreshCw, ShieldCheck, Sparkles, Palette, KeyRound } from "lucide-react";
 
 import "./App.css";
 import { MAIN_SESSION_ID, fitAndResize } from "./utils/terminal";
@@ -33,6 +33,8 @@ import FleetRunner from "./components/FleetRunner/FleetRunner";
 import PlaybookRunner from "./components/PlaybookRunner/PlaybookRunner";
 import CloudBrowser from "./components/CloudBrowser/CloudBrowser";
 import TopBar from "./components/TopBar/TopBar";
+import QuickVaultModal from "./components/Vault/QuickVaultModal";
+import VaultManager from "./components/Vault/VaultManager";
 import Modal from "./components/Common/Modal";
 import { DEFAULT_SIDEBAR_ITEMS } from "./constants";
 import StartupAnimation from "./components/StartupAnimation/StartupAnimation";
@@ -139,6 +141,7 @@ export default function App() {
     const [activeView, setActiveView] = useState("dashboard");
     const [isConnecting, setIsConnecting] = useState(false);
     const [cmdOpen, setCmdOpen] = useState(false);
+    const [quickVaultOpen, setQuickVaultOpen] = useState(false);
 
     // Sidebar customization — persisted to localStorage
     // Merges any newly added DEFAULT_SIDEBAR_ITEMS so existing users see new features
@@ -167,16 +170,25 @@ export default function App() {
         localStorage.setItem('sidebarItems', JSON.stringify(items));
     };
 
-    // Command Palette global listener (Ctrl+K or Cmd+K)
+    // Global listeners: Command Palette (Ctrl+K) & Quick Vault (Alt+V)
     useEffect(() => {
         const handleKeyDown = (e) => {
             if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
                 e.preventDefault();
                 setCmdOpen(prev => !prev);
             }
+            if (e.altKey && e.key.toLowerCase() === 'v') {
+                e.preventDefault();
+                setQuickVaultOpen(prev => !prev);
+            }
         };
+        const handleOpenVaultEvent = () => setQuickVaultOpen(true);
         window.addEventListener('keydown', handleKeyDown);
-        return () => window.removeEventListener('keydown', handleKeyDown);
+        window.addEventListener('open-quick-vault', handleOpenVaultEvent);
+        return () => {
+            window.removeEventListener('keydown', handleKeyDown);
+            window.removeEventListener('open-quick-vault', handleOpenVaultEvent);
+        };
     }, []);
 
     // XTerm Refs for Bottom Manual Drawer
@@ -252,6 +264,14 @@ export default function App() {
         // Clipboard integration: Ctrl+C copies selection (no SIGINT), Ctrl+V pastes
         term.attachCustomKeyEventHandler((e) => {
             if (e.type !== 'keydown') return true;
+
+            // Alt+V → Open Quick Secrets Vault directly from terminal
+            if (e.altKey && e.key.toLowerCase() === 'v') {
+                e.preventDefault();
+                setQuickVaultOpen(prev => !prev);
+                return false;
+            }
+
             const ctrl = e.ctrlKey || e.metaKey;
             if (!ctrl) return true;
 
@@ -529,13 +549,25 @@ export default function App() {
                     flips — so they must be mounted on the login screen too. */}
                 <HostKeyModal />
                 <MfaModal />
+                <QuickVaultModal
+                    isOpen={quickVaultOpen}
+                    onClose={() => setQuickVaultOpen(false)}
+                />
             </>
         );
     }
 
     return (
         <div className="app-shell" onDragOver={(e) => e.preventDefault()}>
-            <TopBar ip={ip} user={user} profileName={profileName} />
+            <TopBar
+                ip={ip}
+                user={user}
+                profileName={profileName}
+                onOpenVault={() => setQuickVaultOpen(true)}
+                onOpenCmd={() => setCmdOpen(true)}
+                onOpenSettings={() => setActiveView("settings")}
+                isSettingsActive={activeView === "settings"}
+            />
             <div className="app-shell-row">
             {/* Sidebar */}
             <div className="app-sidebar">
@@ -562,19 +594,6 @@ export default function App() {
 
                 <div className="sidebar-spacer"></div>
 
-                <div className="sidebar-icon"
-                    onClick={() => setCmdOpen(true)}
-                    onMouseEnter={(e) => showTip(e, "Command Palette (Ctrl+K)")}
-                    onMouseLeave={hideTip}>
-                    <CommandIcon size={22} />
-                </div>
-                <div className="sidebar-icon"
-                    onClick={() => setActiveView("settings")}
-                    onMouseEnter={(e) => showTip(e, "Settings & Tools")}
-                    onMouseLeave={hideTip}
-                    data-active={activeView === "settings"}>
-                    <Settings size={22} />
-                </div>
                 <div className="sidebar-icon danger"
                     onClick={disconnect}
                     onMouseEnter={(e) => showTip(e, "Disconnect")}
@@ -659,6 +678,11 @@ export default function App() {
                     <div style={{ display: activeView === "snippets" ? "flex" : "none", flexDirection: "column", height: "100%", width: "100%" }}>
                         <ErrorBoundary>
                             <Snippets />
+                        </ErrorBoundary>
+                    </div>
+                    <div style={{ display: activeView === "vault" ? "flex" : "none", flexDirection: "column", height: "100%", width: "100%" }}>
+                        <ErrorBoundary>
+                            <VaultManager />
                         </ErrorBoundary>
                     </div>
                     <div style={{ display: activeView === "docker" ? "flex" : "none", flexDirection: "column", height: "100%", width: "100%" }}>
@@ -782,6 +806,26 @@ export default function App() {
                             >
                                 <RefreshCw size={12} style={isReconnecting ? { animation: 'spin 1s linear infinite' } : {}} />
                             </button>
+
+                            <button
+                                title="Secrets Vault (Alt+V) — Copy credentials & paste"
+                                style={{
+                                    background: 'rgba(79, 124, 255, 0.15)',
+                                    border: '1px solid rgba(79, 124, 255, 0.3)',
+                                    borderRadius: '4px',
+                                    color: '#c9d1d9',
+                                    cursor: 'pointer',
+                                    padding: '2px 6px',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '4px',
+                                    fontSize: '11px',
+                                }}
+                                onClick={(e) => { e.stopPropagation(); setQuickVaultOpen(true); }}
+                            >
+                                <KeyRound size={12} style={{ color: '#4f7cff' }} />
+                                <span>Vault</span>
+                            </button>
                             {terminalOnlyMode && (
                                 <button
                                     title="Open OpsPilot AI"
@@ -821,6 +865,16 @@ export default function App() {
                 onAction={(action, value) => {
                     if (action === 'setView') setActiveView(value);
                     if (action === 'disconnect') disconnect();
+                    if (action === 'openQuickVault') setQuickVaultOpen(true);
+                }}
+            />
+
+            <QuickVaultModal
+                isOpen={quickVaultOpen}
+                onClose={() => setQuickVaultOpen(false)}
+                onOpenFullVault={() => {
+                    setQuickVaultOpen(false);
+                    setActiveView("vault");
                 }}
             />
 
