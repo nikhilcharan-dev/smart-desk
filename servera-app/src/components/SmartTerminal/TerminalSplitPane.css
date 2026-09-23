@@ -1,0 +1,102 @@
+/* ============================================================
+   TerminalSplitPane.css — Individual Split Terminal View
+   ============================================================ */
+
+.term-split-pane {
+    display: flex;
+    flex-direction: column;
+    background: #090c13;
+    min-width: 180px;
+    min-height: 120px;
+    position: relative;
+    overflow: hidden;
+    flex: 1 1 0;
+    transition: outline 0.15s ease;
+}
+
+.term-split-pane.active {
+    box-shadow: inset 0 0 0 1px rgba(79, 124, 255, 0.4);
+}
+
+.term-split-pane-bar {
+    height: 26px;
+    background: #0d1017;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 10px;
+    font-size: 11px;
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+    flex-shrink: 0;
+    user-select: none;
+}
+
+.term-split-pane-tag {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-weight: 500;
+}
+
+.term-split-icon {
+    color: #6b7280;
+}
+
+.term-split-title {
+    font-size: 11px;
+    color: var(--text-main);
+}
+
+.term-split-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+}
+
+.term-split-dot.primary {
+    background: #20be38;
+    box-shadow: 0 0 6px rgba(32, 190, 56, 0.6);
+}
+
+.term-split-dot.sub {
+    background: #4f7cff;
+    box-shadow: 0 0 6px rgba(79, 124, 255, 0.6);
+}
+
+.term-split-pane-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.term-split-close-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 2px 5px;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.12s ease;
+}
+
+.term-split-close-btn:hover {
+    background: rgba(239, 68, 68, 0.18);
+    color: #ef4444;
+}
+
+.term-split-canvas {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    background: #0b0e14;
+    padding: 4px 0 0 4px;
+}
+
+.term-split-canvas .xterm {
+    height: 100%;
+}

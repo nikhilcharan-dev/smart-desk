@@ -1,8 +1,9 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Activity, RefreshCw, AlertCircle, Play, Square, RotateCcw } from "lucide-react";
 import { MAIN_SESSION_ID } from "../../../utils/terminal";
 import { formatRemoteError } from "../../../utils/errors";
+import { usePolling } from "../../../hooks/usePolling";
 import "./SettingsPanels.css";
 
 // Common developer services to monitor
@@ -17,7 +18,7 @@ const KNOWN_SERVICES = [
     { id: "ssh", name: "SSH Daemon", desc: "Openssh Server" },
 ];
 
-export default function ServiceManager() {
+export default function ServiceManager({ active = true }) {
     const [services, setServices] = useState([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
@@ -70,13 +71,10 @@ export default function ServiceManager() {
         }
     };
 
-    useEffect(() => {
-        fetchServices();
-
-        // Auto-refresh every 10s
-        const interval = setInterval(fetchServices, 10000);
-        return () => clearInterval(interval);
-    }, []);
+    // Auto-refresh every 10s, but only while Settings is the visible view.
+    // SettingsHub keeps its active tab, so leaving Settings on this panel used
+    // to leave one `systemctl is-active` per known service running forever.
+    usePolling(fetchServices, 10000, active);
 
     const performAction = async (serviceId, action) => {
         setPendingAction(serviceId);

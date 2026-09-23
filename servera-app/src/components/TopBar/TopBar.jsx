@@ -2,18 +2,19 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Wifi, WifiOff, Shield, KeyRound, Search, Settings } from "lucide-react";
+import WindowControls from "../Common/WindowControls";
 import "./TopBar.css";
 
 const WG_STATUS_LABELS = {
     starting: "Starting…",
-    running: "Connected (waiting for traffic)",
+    running: "Connected",
     active: "Active",
     restarting: "Restarting…",
     error: "Error",
 };
 
 // macOS/mobile-style Control Center: a WiFi-shaped icon in the top-right
-// that reflects the active WireGuard gateway's live status, and opens a
+// that reflects the active gateway's live status, and opens a
 // popover to switch gateways on/off without leaving whatever view is open.
 export default function TopBar({
     ip,
@@ -25,7 +26,8 @@ export default function TopBar({
     isSettingsActive,
 }) {
     const [profiles, setProfiles] = useState([]);
-    const [wgStatus, setWgStatus] = useState(null); // null = no active gateway
+    const [wgStatus, setWgStatus] = useState(null); // null = no active wireguard gateway
+    const [tunnels, setTunnels] = useState([]);
     const [open, setOpen] = useState(false);
     const [busyId, setBusyId] = useState(null);
     const [error, setError] = useState(null);
@@ -45,16 +47,38 @@ export default function TopBar({
         } catch { /* ignore */ }
     }, []);
 
-    useEffect(() => { loadProfiles(); loadStatus(); }, [loadProfiles, loadStatus]);
+    const loadTunnels = useCallback(async () => {
+        try {
+            const list = await invoke("get_active_tunnels");
+            setTunnels(list || []);
+        } catch { /* ignore */ }
+    }, []);
+
+    const refreshAll = useCallback(() => {
+        loadProfiles();
+        loadStatus();
+        loadTunnels();
+    }, [loadProfiles, loadStatus, loadTunnels]);
+
+    useEffect(() => {
+        refreshAll();
+    }, [refreshAll]);
+
+    useEffect(() => {
+        if (open) {
+            refreshAll();
+        }
+    }, [open, refreshAll]);
 
     useEffect(() => {
         let unlisten;
         listen("tunnel-status", (e) => {
             if (e.payload?.type !== "wireguard") return;
             setWgStatus(e.payload.status === "stopped" ? null : e.payload);
+            loadTunnels();
         }).then(fn => (unlisten = fn));
         return () => { if (unlisten) unlisten(); };
-    }, []);
+    }, [loadTunnels]);
 
     useEffect(() => {
         if (!open) return;
@@ -65,21 +89,42 @@ export default function TopBar({
         return () => document.removeEventListener("mousedown", onClick);
     }, [open]);
 
-    const gateways = profiles.filter(p => p.wg_config);
+    const gateways = profiles.filter(p => p.wg_config || p.tags?.includes("gateway"));
+
+    const isGatewayActive = useCallback((g) => {
+        if (g.wg_config) {
+            const matchesId = wgStatus?.profileId === g.id;
+            const matchesEndpoint = wgStatus?.endpoint && g.wg_config?.endpoint && wgStatus.endpoint === g.wg_config.endpoint;
+            return !!(wgStatus && (matchesId || matchesEndpoint) && wgStatus.status !== "stopped" && wgStatus.status !== "error");
+        }
+        return tunnels.some(t => t.id.includes(g.ip) || (g.id && t.id.includes(g.id)));
+    }, [wgStatus, tunnels]);
+
+    const isAnyWgActive = wgStatus && wgStatus.status !== "stopped" && wgStatus.status !== "error";
+    const isAnySshActive = tunnels.some(t => !t.id.startsWith("wg-"));
+    const isAnyActive = isAnyWgActive || isAnySshActive;
+
     const status = wgStatus?.status || null;
-    const iconClass = !status ? "" : status === "error" ? "error" : status === "active" ? "connected" : "connecting";
+    const iconClass = status === "error"
+        ? "error"
+        : isAnyActive
+            ? (status === "starting" || status === "restarting" ? "connecting" : "connected")
+            : "";
 
     const handleToggle = async (profile) => {
         setBusyId(profile.id);
         setError(null);
+        const active = isGatewayActive(profile);
         try {
-            if (wgStatus?.profileId === profile.id) {
-                await invoke("stop_wireguard_gateway");
+            if (active) {
+                await invoke("stop_all_tunnels");
                 setWgStatus(null);
+                setTunnels([]);
             } else {
-                const started = await invoke("start_gateway_from_profile", { profileId: profile.id });
-                setWgStatus(started);
+                await invoke("start_gateway_from_profile", { profileId: profile.id });
             }
+            await loadStatus();
+            await loadTunnels();
         } catch (err) {
             setError(String(err));
         } finally {
@@ -88,7 +133,7 @@ export default function TopBar({
     };
 
     return (
-        <div className="topbar">
+        <div className="topbar" data-tauri-drag-region>
             <div className="topbar-left">
                 {(ip || profileName) && (
                     <span className="topbar-conn">
@@ -122,11 +167,17 @@ export default function TopBar({
                 )}
 
                 <button
-                    className={`topbar-icon-btn ${iconClass}`}
+                    className={`topbar-icon-btn ${open ? "active" : ""} ${iconClass}`}
                     onClick={() => setOpen(p => !p)}
-                    title={status ? `WireGuard: ${WG_STATUS_LABELS[status] || status}` : "WireGuard: Off"}
+                    title={
+                        status && status !== "stopped"
+                            ? `WireGuard: ${WG_STATUS_LABELS[status] || status}`
+                            : isAnySshActive
+                                ? "SSH Gateway: Active"
+                                : "Gateways: Off"
+                    }
                 >
-                    {status && status !== "error" ? <Wifi size={15} /> : <WifiOff size={15} />}
+                    {isAnyActive && status !== "error" ? <Wifi size={15} /> : <WifiOff size={15} />}
                 </button>
 
                 {onOpenSettings && (
@@ -138,30 +189,52 @@ export default function TopBar({
                         <Settings size={15} />
                     </button>
                 )}
+
+                <div className="topbar-divider" />
+                <WindowControls />
+
                 {open && (
                     <div className="topbar-popover">
                         <div className="topbar-popover-title">
-                            <Shield size={13} /> WireGuard Gateways
+                            <Shield size={13} /> Gateways & Tunnels
                         </div>
                         {gateways.length === 0 ? (
                             <div className="topbar-popover-empty">
-                                No gateway profiles yet — import a .conf from the Gateways tab.
+                                No gateway profiles yet — import or configure a gateway from the Gateways tab.
                             </div>
                         ) : (
                             <div className="topbar-popover-list">
                                 {gateways.map(g => {
-                                    const live = wgStatus?.profileId === g.id ? wgStatus : null;
-                                    const label = live ? (WG_STATUS_LABELS[live.status] || live.status) : "Off";
+                                    const isWg = !!g.wg_config;
+                                    const isLiveWg = isWg && (wgStatus?.profileId === g.id || (wgStatus?.endpoint && g.wg_config?.endpoint && wgStatus.endpoint === g.wg_config.endpoint));
+                                    const isLiveSsh = !isWg && tunnels.some(t => t.id.includes(g.ip) || (g.id && t.id.includes(g.id)));
+                                    const active = isWg
+                                        ? !!(isLiveWg && wgStatus?.status !== "stopped" && wgStatus?.status !== "error")
+                                        : isLiveSsh;
+                                    const isErrored = isWg && isLiveWg && wgStatus?.status === "error";
+
+                                    let label = "Off";
+                                    if (busyId === g.id) {
+                                        label = "…";
+                                    } else if (isErrored) {
+                                        label = "Error";
+                                    } else if (isWg && isLiveWg) {
+                                        label = WG_STATUS_LABELS[wgStatus.status] || wgStatus.status;
+                                    } else if (isLiveSsh) {
+                                        label = "Active";
+                                    }
+
                                     return (
                                         <button
                                             key={g.id}
-                                            className={`topbar-gw-row ${live ? "active" : ""}`}
+                                            className={`topbar-gw-row ${active ? "active" : ""}`}
                                             onClick={() => handleToggle(g)}
                                             disabled={busyId === g.id}
+                                            title={g.wg_config ? `WireGuard: ${g.wg_config.endpoint}` : `SSH Gateway: ${g.ip}`}
                                         >
-                                            <span className={`topbar-gw-dot ${live?.status === "error" ? "error" : live ? "on" : ""}`} />
-                                            <span className="topbar-gw-name">{g.name}</span>
-                                            <span className="topbar-gw-status">{busyId === g.id ? "…" : label}</span>
+                                            <span className={`topbar-gw-dot ${isErrored ? "error" : active ? "on" : ""}`} />
+                                            <span className="topbar-gw-name">{g.name || g.ip}</span>
+                                            <span className="topbar-gw-status">{label}</span>
                                         </button>
                                     );
                                 })}

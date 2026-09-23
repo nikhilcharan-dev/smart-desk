@@ -1,7 +1,8 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { MAIN_SESSION_ID } from '../../utils/terminal';
 import { formatRemoteError } from '../../utils/errors';
+import { usePolling } from '../../hooks/usePolling';
 import { Cpu, RefreshCw, Search, X, Skull, ArrowUpDown, Pause, Play } from 'lucide-react';
 import './ProcessManager.css';
 
@@ -24,7 +25,7 @@ function parseProcesses(raw) {
     }).filter(Boolean);
 }
 
-export default function ProcessManager() {
+export default function ProcessManager({ active = true }) {
     const [processes, setProcesses] = useState([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
@@ -32,7 +33,6 @@ export default function ProcessManager() {
     const [sortKey, setSortKey] = useState('cpu');
     const [sortDir, setSortDir] = useState('desc');
     const [autoRefresh, setAutoRefresh] = useState(false);
-    const intervalRef = useRef(null);
 
     const loadProcesses = async () => {
         setLoading(true);
@@ -54,14 +54,9 @@ export default function ProcessManager() {
         loadProcesses();
     }, []);
 
-    useEffect(() => {
-        if (autoRefresh) {
-            intervalRef.current = setInterval(loadProcesses, 5000);
-        }
-        return () => {
-            if (intervalRef.current) clearInterval(intervalRef.current);
-        };
-    }, [autoRefresh]);
+    // Auto-refresh also stops while this tab is hidden: it used to keep running
+    // `ps aux` every 5s from behind whatever view you had switched to.
+    usePolling(loadProcesses, 5000, active && autoRefresh);
 
     const killProcess = async (pid) => {
         try {

@@ -19,7 +19,7 @@ const TABS = [
     { id: 'import', label: 'Import Profiles', icon: Download, component: ImportProfiles },
 ];
 
-export default function SettingsHub({ sidebarItems, setSidebarItems }) {
+export default function SettingsHub({ sidebarItems, setSidebarItems, active = true }) {
     const [activeTab, setActiveTab] = useState('app');
 
     const ActiveComponent = TABS.find(t => t.id === activeTab)?.component || AppConfig;
@@ -47,7 +47,7 @@ export default function SettingsHub({ sidebarItems, setSidebarItems }) {
                 </div>
             </div>
             <div className="sh-content">
-                <ActiveComponent sidebarItems={sidebarItems} setSidebarItems={setSidebarItems} />
+                <ActiveComponent sidebarItems={sidebarItems} setSidebarItems={setSidebarItems} active={active} />
             </div>
         </div>
     );

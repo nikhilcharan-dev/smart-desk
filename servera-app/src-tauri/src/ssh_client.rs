@@ -3,17 +3,35 @@ use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
 use ssh2::{Channel, Session, Sftp};
 use tauri::{AppHandle, Emitter, Manager};
+use socket2::{SockRef, TcpKeepalive};
 
 /// TCP connect timeout in seconds
 const CONNECT_TIMEOUT_SECS: u64 = 10;
 
 /// Read buffer size for SSH output polling
 const READ_BUF_SIZE: usize = 8192;
+
+/// PTY read pacing. The interactive channel is non-blocking, so its reader has
+/// to sleep between attempts. It polls tight while output is arriving and backs
+/// off geometrically once the channel goes quiet, reaching the ceiling after
+/// roughly a quarter second of silence.
+const READ_POLL_MIN: Duration = Duration::from_millis(1);
+const READ_POLL_MAX: Duration = Duration::from_millis(120);
+
+/// Reads per pass before the reader yields the session lock, so a flood of
+/// output cannot starve `send_ssh_input`.
+const MAX_READS_PER_PASS: usize = 8;
+
+/// How often an idle connection is pinged so it survives until logout.
+/// The interactive PTY has its own 10s ping inside `spawn_read_thread`; this
+/// covers the exec connection and every proxy-jump hop, which are otherwise
+/// only pinged as a side-effect of a command being run.
+const KEEPALIVE_INTERVAL_SECS: u64 = 20;
 
 /// Chunk size for file transfers (64KB)
 const TRANSFER_CHUNK_SIZE: usize = 4194304; // 4MB chunks for faster SFTP transfer
@@ -59,11 +77,57 @@ impl RemoteOs {
     }
 }
 
+/// Lets whoever writes to a PTY wake that session's reader thread.
+///
+/// The reader polls a non-blocking channel, and a fixed 10ms poll meant 100
+/// wakeups a second per terminal — each taking the session lock — with nothing
+/// happening. Backing off while the channel is quiet fixes that, but a
+/// backed-off reader would add its remaining sleep to the echo latency of a
+/// keystroke. So sending input signals this, and the reader polls at once
+/// instead of waiting out the backoff.
+pub struct ReadPacer {
+    nudged: Mutex<bool>,
+    ready: Condvar,
+}
+
+impl ReadPacer {
+    fn new() -> Self {
+        Self { nudged: Mutex::new(false), ready: Condvar::new() }
+    }
+
+    /// Ask the reader to poll now.
+    pub fn nudge(&self) {
+        let mut pending = self.nudged.lock().unwrap_or_else(|p| p.into_inner());
+        *pending = true;
+        self.ready.notify_all();
+    }
+
+    /// Sleep until `dur` elapses or a nudge arrives, whichever is first.
+    /// Returns true when it was a nudge, so the caller can drop back to a tight
+    /// poll. A nudge that landed while the caller was busy is not lost — it is
+    /// still pending here and consumed on entry.
+    pub fn wait(&self, dur: Duration) -> bool {
+        let mut pending = self.nudged.lock().unwrap_or_else(|p| p.into_inner());
+        if *pending {
+            *pending = false;
+            return true;
+        }
+        let (mut pending, _) = self.ready
+            .wait_timeout(pending, dur)
+            .unwrap_or_else(|p| p.into_inner());
+        let was_nudged = *pending;
+        *pending = false;
+        was_nudged
+    }
+}
+
 pub struct SshConnection {
     #[allow(dead_code)]
     pub session: Session, // kept alive for Channel RAII lifetime
     pub channel: Channel,
     pub host_key_fingerprint: Option<String>,
+    /// Shared with this session's reader thread. See ReadPacer.
+    pub pacer: Arc<ReadPacer>,
 }
 
 impl Drop for SshConnection {
@@ -118,24 +182,37 @@ impl SshConnection {
         channel.shell().map_err(|e| e.to_string())?;
 
         sess.set_blocking(false);
+        sess.set_keepalive(true, 10);
 
         Ok(Self {
             session: sess,
             channel,
             host_key_fingerprint,
+            pacer: Arc::new(ReadPacer::new()),
         })
     }
 
     pub fn send_input(&mut self, data: &str) -> Result<(), String> {
-        self.channel
+        let written = self.channel
             .write_all(data.as_bytes())
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string());
+        // The echo for this input is already on its way back, so have the
+        // reader look for it now rather than at the end of its current backoff.
+        if written.is_ok() {
+            self.pacer.nudge();
+        }
+        written
     }
 
     pub fn resize(&mut self, cols: u32, rows: u32) -> Result<(), String> {
-        self.channel
+        let resized = self.channel
             .request_pty_size(cols, rows, None, None)
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string());
+        // A resize usually makes the far side redraw.
+        if resized.is_ok() {
+            self.pacer.nudge();
+        }
+        resized
     }
 }
 
@@ -306,12 +383,51 @@ fn establish_session(
         let mut server_reader = server_sock;
         let mut server_writer = server_reader.try_clone().map_err(|e| e.to_string())?;
 
+        // Liveness token for the bridge: both piping threads hold a clone, so
+        // the Arc is only fully dropped once BOTH directions have closed — i.e.
+        // once this hop is genuinely dead. The keepalive thread below watches it
+        // through a Weak and retires with the bridge instead of leaking.
+        let bridge_alive = Arc::new(());
+        let alive_up = bridge_alive.clone();
+        let alive_down = bridge_alive.clone();
+
         std::thread::spawn(move || {
+            let _alive = alive_up;
             let _ = std::io::copy(&mut chan_reader, &mut server_writer);
         });
         std::thread::spawn(move || {
+            let _alive = alive_down;
             let _ = std::io::copy(&mut server_reader, &mut chan_writer);
         });
+
+        // Keep the jump hop itself awake. The TCP keepalive configured below is
+        // applied to the 127.0.0.1 bridge socket, which says nothing about the
+        // real link to the jump host, and nothing else ever pings this session —
+        // so an idle proxy-jump/WireGuard connection used to be dropped upstream.
+        // Owning `jump_sess` here also keeps the hop alive for the bridge's
+        // lifetime rather than until the end of this scope.
+        let bridge_watch = Arc::downgrade(&bridge_alive);
+        drop(bridge_alive);
+        std::thread::spawn(move || {
+            loop {
+                thread::sleep(Duration::from_secs(KEEPALIVE_INTERVAL_SECS));
+                if bridge_watch.upgrade().is_none() {
+                    break;
+                }
+                if jump_sess.keepalive_send().is_err() {
+                    break;
+                }
+            }
+        });
+
+        let _ = client_sock.set_nodelay(true);
+        let _ = client_sock.set_read_timeout(None);
+        let _ = client_sock.set_write_timeout(None);
+        let sock_ref = SockRef::from(&client_sock);
+        let mut ka = TcpKeepalive::new();
+        ka = ka.with_time(Duration::from_secs(10));
+        ka = ka.with_interval(Duration::from_secs(5));
+        let _ = sock_ref.set_tcp_keepalive(&ka);
 
         sess.set_tcp_stream(client_sock);
     } else {
@@ -321,11 +437,18 @@ fn establish_session(
             Duration::from_secs(CONNECT_TIMEOUT_SECS)
         ).map_err(|e| format!("Connection to {} failed: {}", ip, e))?;
 
-        let _ = tcp.set_read_timeout(Some(Duration::from_secs(30)));
-        let _ = tcp.set_write_timeout(Some(Duration::from_secs(30)));
+        let _ = tcp.set_nodelay(true);
+        let _ = tcp.set_read_timeout(None);
+        let _ = tcp.set_write_timeout(None);
+        let sock_ref = SockRef::from(&tcp);
+        let mut ka = TcpKeepalive::new();
+        ka = ka.with_time(Duration::from_secs(10));
+        ka = ka.with_interval(Duration::from_secs(5));
+        let _ = sock_ref.set_tcp_keepalive(&ka);
         sess.set_tcp_stream(tcp);
     }
 
+    sess.set_timeout(30_000);
     sess.handshake().map_err(|e| format!("SSH handshake failed: {}", e))?;
 
     // Verify the host key (TOFU) BEFORE sending any credentials. Skipped for
@@ -342,6 +465,7 @@ fn establish_session(
     }
 
     authenticate_session(sess, user, password, private_key, app, session_id)?;
+    sess.set_keepalive(true, 10);
     Ok(())
 }
 
@@ -437,6 +561,7 @@ impl SshExecConn {
     /// status. Returns Err only on a transport/channel failure — a non-zero
     /// exit is reported in `code`, so the caller decides what it means.
     pub fn exec_command_full(&self, command: &str) -> Result<CmdOutput, String> {
+        let _ = self.session.keepalive_send();
         let mut channel = self.session.channel_session().map_err(|e| e.to_string())?;
         channel.exec(command).map_err(|e| e.to_string())?;
         let mut stdout = String::new();
@@ -1369,11 +1494,16 @@ impl SshExecConn {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Spawn a thread that reads from a log stream channel and emits events
+///
+/// `on_end` runs once the reader has stopped for good — on EOF, on a transport
+/// error, or after an explicit stop. The caller uses it to drop the stream's
+/// handle, which owns a whole SSH session of its own.
 pub fn spawn_log_reader(
     stream_id: String,
     channel: Arc<Mutex<Option<Channel>>>,
     stop_flag: Arc<std::sync::atomic::AtomicBool>,
     app_handle: AppHandle,
+    on_end: impl FnOnce() + Send + 'static,
 ) {
     thread::spawn(move || {
         let mut buf = [0u8; READ_BUF_SIZE];
@@ -1397,7 +1527,7 @@ pub fn spawn_log_reader(
                     }
                     Ok(_) => {}
                     Err(e) => {
-                        if e.kind() != std::io::ErrorKind::WouldBlock {
+                        if e.kind() != std::io::ErrorKind::WouldBlock && e.kind() != std::io::ErrorKind::TimedOut {
                             let _ = app_handle.emit(&event_name, "__EOF__");
                             break;
                         }
@@ -1410,6 +1540,11 @@ pub fn spawn_log_reader(
             drop(guard);
             thread::sleep(Duration::from_millis(50));
         }
+
+        // Reached on every exit path. The channel lock is already released here,
+        // so `on_end` is free to take the stream registry's lock without
+        // inverting the order `stop_log_stream` acquires them in.
+        on_end();
     });
 }
 
@@ -1795,16 +1930,71 @@ pub fn start_remote_forward(
     })
 }
 
+/// Keep an exec connection awake for as long as it is registered.
+///
+/// `Session::set_keepalive` only *configures* libssh2 — it never sends anything
+/// on its own, and the only `keepalive_send` on this connection sits at the top
+/// of `exec_command_full`. That made connection liveness an accident of the
+/// Dashboard's 5s poll: gate that poll on tab visibility and an idle exec
+/// connection dies. This thread makes liveness explicit and independent of the
+/// UI, so the session survives until logout no matter which tab is open.
+///
+/// It retires on its own: `close_exec_conn`/`disconnect_all` clear the inner
+/// `Option`, which the next tick sees as `None` and breaks on. Dropping the
+/// `Weak` upgrade covers the case where the whole entry is released.
+pub fn spawn_exec_keepalive_thread(connection: Arc<Mutex<Option<SshExecConn>>>) {
+    let watch = Arc::downgrade(&connection);
+    drop(connection);
+    thread::spawn(move || {
+        loop {
+            thread::sleep(Duration::from_secs(KEEPALIVE_INTERVAL_SECS));
+            let Some(conn) = watch.upgrade() else { break };
+            let guard = match conn.lock() {
+                Ok(g) => g,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            match guard.as_ref() {
+                // A failed ping means the transport is already gone; the next
+                // command will surface the real error, so just stop pinging.
+                Some(active) => {
+                    if active.session.keepalive_send().is_err() {
+                        break;
+                    }
+                }
+                None => break,
+            }
+        }
+    });
+}
+
 pub fn spawn_read_thread(
     session_id: String,
     connection: Arc<Mutex<Option<SshConnection>>>,
     app_handle: AppHandle,
 ) {
+    // Taken once, up front, so the sleep between polls never holds the session
+    // lock — `send_ssh_input` has to be able to get in at any time.
+    let pacer = {
+        let guard = match connection.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        match guard.as_ref() {
+            Some(conn) => conn.pacer.clone(),
+            None => return,
+        }
+    };
+
     thread::spawn(move || {
         let mut buf = [0u8; READ_BUF_SIZE];
         let event_name = format!("ssh-output:{}", session_id);
+        let error_event = format!("ssh-error:{}", session_id);
+        let mut last_keepalive = std::time::Instant::now();
+        let mut backoff = READ_POLL_MIN;
 
         loop {
+            let mut read_something = false;
+
             {
                 // Recover from poisoned mutex instead of panicking
                 let mut guard = match connection.lock() {
@@ -1812,25 +2002,105 @@ pub fn spawn_read_thread(
                     Err(poisoned) => poisoned.into_inner(),
                 };
 
-                if let Some(conn) = guard.as_mut() {
+                let Some(conn) = guard.as_mut() else { break };
+
+                if last_keepalive.elapsed() >= Duration::from_secs(10) {
+                    let _ = conn.session.keepalive_send();
+                    last_keepalive = std::time::Instant::now();
+                }
+
+                // Drain what is waiting in one pass rather than one chunk per
+                // poll, so a burst of output is not paced by the sleep below.
+                // Capped so heavy output still yields the lock promptly.
+                for _ in 0..MAX_READS_PER_PASS {
                     match conn.channel.read(&mut buf) {
-                        Ok(n) if n > 0 => {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            read_something = true;
                             let data = String::from_utf8_lossy(&buf[..n]).to_string();
                             let _ = app_handle.emit(&event_name, data);
-                        }
-                        Ok(_) => {}
-                        Err(e) => {
-                            if e.kind() != std::io::ErrorKind::WouldBlock {
-                                let _ = app_handle.emit(&format!("ssh-error:{}", session_id), e.to_string());
+                            // A short read means the channel is drained; asking
+                            // again would just return WouldBlock.
+                            if n < buf.len() {
                                 break;
                             }
                         }
+                        Err(e) => {
+                            if e.kind() != std::io::ErrorKind::WouldBlock
+                                && e.kind() != std::io::ErrorKind::TimedOut
+                            {
+                                let _ = app_handle.emit(&error_event, e.to_string());
+                                return;
+                            }
+                            break;
+                        }
                     }
-                } else {
-                    break;
                 }
             }
-            thread::sleep(Duration::from_millis(10));
+
+            // Tight while output is flowing, geometric back-off once it stops.
+            backoff = if read_something {
+                READ_POLL_MIN
+            } else {
+                (backoff * 2).min(READ_POLL_MAX)
+            };
+
+            // Returns early when input was sent, so a keystroke's echo never
+            // waits out the back-off.
+            if pacer.wait(backoff) {
+                backoff = READ_POLL_MIN;
+            }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A nudge that lands while the reader is mid-pass must not be lost — it is
+    /// consumed on the next `wait`, which returns at once.
+    #[test]
+    fn nudge_before_wait_is_not_lost() {
+        let pacer = ReadPacer::new();
+        pacer.nudge();
+        let started = std::time::Instant::now();
+        assert!(pacer.wait(Duration::from_secs(5)));
+        assert!(started.elapsed() < Duration::from_millis(100));
+    }
+
+    /// With nothing sent, `wait` sleeps out the back-off and reports no nudge.
+    #[test]
+    fn quiet_wait_times_out() {
+        let pacer = ReadPacer::new();
+        let started = std::time::Instant::now();
+        assert!(!pacer.wait(Duration::from_millis(120)));
+        assert!(started.elapsed() >= Duration::from_millis(100));
+    }
+
+    /// The point of the whole thing: input sent while the reader is backed off
+    /// wakes it immediately instead of waiting out the sleep.
+    #[test]
+    fn nudge_wakes_a_backed_off_reader() {
+        let pacer = Arc::new(ReadPacer::new());
+        let writer = pacer.clone();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(50));
+            writer.nudge();
+        });
+        let started = std::time::Instant::now();
+        assert!(pacer.wait(Duration::from_secs(5)));
+        let waited = started.elapsed();
+        assert!(waited >= Duration::from_millis(40), "woke too early: {:?}", waited);
+        assert!(waited < Duration::from_millis(1500), "not woken by nudge: {:?}", waited);
+    }
+
+    /// Each nudge is consumed once; a second wait falls through to its timeout.
+    #[test]
+    fn nudge_is_consumed_once() {
+        let pacer = ReadPacer::new();
+        pacer.nudge();
+        assert!(pacer.wait(Duration::from_secs(5)));
+        assert!(!pacer.wait(Duration::from_millis(60)));
+    }
 }

@@ -3,13 +3,54 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { MAIN_SESSION_ID } from "../../utils/terminal";
 import { formatRemoteError } from "../../utils/errors";
-import { Folder, File, ArrowUp, RefreshCw, Plus, Monitor, Search, X, ChevronRight, Shield, CornerDownLeft, Pin, Check } from "lucide-react";
+import {
+    Folder, File, ArrowUp, RefreshCw, Plus, Monitor, Search, X, ChevronRight, Shield, CornerDownLeft, Pin, Check,
+    FileCode, FileText, FileJson, FileImage, FileArchive, FileTerminal, FileKey
+} from "lucide-react";
 import "./FileExplorer.css";
 import FileContextMenu from "./FileContextMenu";
 import PermissionModal from "./PermissionModal";
 import Modal from "../Common/Modal";
 import { dragController } from "./ManualDragController";
 import { useTransfers } from "./TransferContext";
+
+/**
+ * Smart Dev Icon Helper: Renders context-aware icons with distinctive styling
+ * for directories and various developer file types.
+ */
+const renderFileItemIcon = (file, viewMode) => {
+    const size = viewMode === 'grid' ? 32 : 18;
+    if (file.is_dir) {
+        return <Folder size={size} fill="#60a5fa" stroke="#1d4ed8" strokeWidth={1.7} />;
+    }
+
+    const extMatch = file.name.match(/\.([a-zA-Z0-9]+)$/);
+    const ext = extMatch ? extMatch[1].toLowerCase() : '';
+
+    if (['rs', 'js', 'jsx', 'ts', 'tsx', 'py', 'c', 'cpp', 'h', 'hpp', 'go', 'java', 'html', 'css', 'scss', 'vue', 'php', 'sql', 'rb'].includes(ext)) {
+        return <FileCode size={size} stroke="#38bdf8" strokeWidth={1.8} />;
+    }
+    if (['json', 'yaml', 'yml', 'toml', 'xml', 'ini', 'env', 'conf', 'config', 'lock'].includes(ext) || file.name.startsWith('.env')) {
+        return <FileJson size={size} stroke="#fbbf24" strokeWidth={1.8} />;
+    }
+    if (['sh', 'bash', 'zsh', 'bat', 'ps1', 'cmd'].includes(ext)) {
+        return <FileTerminal size={size} stroke="#22c55e" strokeWidth={1.8} />;
+    }
+    if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'ico', 'bmp'].includes(ext)) {
+        return <FileImage size={size} stroke="#ec4899" strokeWidth={1.8} />;
+    }
+    if (['zip', 'tar', 'gz', 'bz2', '7z', 'rar', 'deb', 'rpm'].includes(ext)) {
+        return <FileArchive size={size} stroke="#a855f7" strokeWidth={1.8} />;
+    }
+    if (['pem', 'key', 'pub', 'crt', 'cert', 'id_rsa', 'id_ed25519'].includes(ext)) {
+        return <FileKey size={size} stroke="#f43f5e" strokeWidth={1.8} />;
+    }
+    if (['md', 'txt', 'log', 'pdf', 'doc', 'docx', 'rtf'].includes(ext)) {
+        return <FileText size={size} stroke="#94a3b8" strokeWidth={1.8} />;
+    }
+
+    return <File size={size} stroke="#9ca3af" strokeWidth={1.8} />;
+};
 
 const formatSize = (bytes) => {
     if (!bytes || bytes === 0) return "--";
@@ -730,11 +771,7 @@ export default function GenericFileTree({ mode = 'sftp', initialPath = "/", prof
                         data-mode={mode}
                     >
                         <div className="file-icon">
-                            {file.is_dir ? (
-                                <Folder size={viewMode === 'grid' ? 32 : 18} fill="#FCD34D" stroke="#F59E0B" />
-                            ) : (
-                                <File size={viewMode === 'grid' ? 32 : 18} className="text-gray-400" />
-                            )}
+                            {renderFileItemIcon(file, viewMode)}
                         </div>
                         <div className="file-name" title={file.path}>{file.name}</div>
                         {viewMode === 'list' && searchResults !== null && (

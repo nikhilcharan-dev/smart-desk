@@ -152,7 +152,7 @@ function RemoteFilePicker({ onSelect, onClose }) {
     );
 }
 
-export default function LogViewer({ profileId, ip, user, port, password, privateKey, proxyJump }) {
+export default function LogViewer({ profileId, ip, user, port, password, privateKey, proxyJump, active = true }) {
     const storageKey = profileId ? `logTabs:profile:${profileId}` : `logTabs:${user}@${ip}`;
 
     const [lines, setLines] = useState([]);
@@ -206,7 +206,11 @@ export default function LogViewer({ profileId, ip, user, port, password, private
         const unlisten = await listen(`log-stream:${sid}`, (event) => {
             const data = event.payload;
             if (data === '__EOF__') {
-                setStreaming(false);
+                // The stream ended by itself (rotated file, removed path, a
+                // read the host refused). Tear the rest down rather than just
+                // flipping the flag — leaving streamIdRef and the Tauri
+                // listener set leaked both of them for the session.
+                stopStream();
                 return;
             }
             const newLines = data.split('\n').filter(l => l.length > 0);
@@ -245,6 +249,29 @@ export default function LogViewer({ profileId, ip, user, port, password, private
     useEffect(() => {
         return () => { stopStream(); };
     }, [stopStream]);
+
+    // A `tail -f` runs on its own SSH connection and used to keep streaming
+    // after you switched tabs, with nobody reading it. Suspend it while this
+    // view is hidden and pick it back up on return, so the cost tracks what is
+    // actually on screen without the user losing their stream.
+    const suspendedStreamRef = useRef(false);
+    const streamCtlRef = useRef(null);
+    useEffect(() => {
+        streamCtlRef.current = { startStream, stopStream, logPath, streaming };
+    });
+
+    useEffect(() => {
+        const ctl = streamCtlRef.current;
+        if (!active) {
+            if (ctl.streaming) {
+                suspendedStreamRef.current = true;
+                ctl.stopStream();
+            }
+        } else if (suspendedStreamRef.current) {
+            suspendedStreamRef.current = false;
+            ctl.startStream(ctl.logPath);
+        }
+    }, [active]);
 
     const fetchLog = useCallback(async (path, count) => {
         setLoading(true);

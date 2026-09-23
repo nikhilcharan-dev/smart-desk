@@ -155,7 +155,7 @@ const THEMES = [
    ────────────────────────────────── */
 
 export default function SmartTerminal({
-    xtermRef, onClose, layout, onLayoutChange,
+    xtermRef, onClose, layout: _layout, onLayoutChange: _onLayoutChange,
     ip, user, port, password, privateKey, proxyJump, profileId,
     onOpenCloudBrowser,
 }) {
@@ -200,7 +200,7 @@ export default function SmartTerminal({
     // Sessions management
     const [sessions, setSessions] = useState([]);
     const [activeSessionId, setActiveSessionId] = useState(null);
-    const [sidebarOpen, setSidebarOpen] = useState(true);
+    const [sidebarOpen, setSidebarOpen] = useState(false);
     const [sidebarWidth, setSidebarWidth] = useState(260);
 
     // Theme
@@ -232,17 +232,18 @@ export default function SmartTerminal({
         localStorage.setItem("opspilot_theme", themeId);
     }, [themeId]);
 
-    // Sidebar drag-to-resize global mouse handlers
+    // Global mouse handlers for left sidebar drag-to-resize
     useEffect(() => {
         const handleMouseMove = (e) => {
-            if (!isDraggingRef.current) return;
-            const delta = e.clientX - dragStartXRef.current;
-            const newW = dragStartWidthRef.current + delta;
-            if (newW < SIDEBAR_COLLAPSE_AT) {
-                setSidebarOpen(false);
-            } else {
-                setSidebarOpen(true);
-                setSidebarWidth(Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, newW)));
+            if (isDraggingRef.current) {
+                const delta = e.clientX - dragStartXRef.current;
+                const newW = dragStartWidthRef.current + delta;
+                if (newW < SIDEBAR_COLLAPSE_AT) {
+                    setSidebarOpen(false);
+                } else {
+                    setSidebarOpen(true);
+                    setSidebarWidth(Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, newW)));
+                }
             }
         };
         const handleMouseUp = () => {
@@ -258,7 +259,6 @@ export default function SmartTerminal({
             document.removeEventListener("mousemove", handleMouseMove);
             document.removeEventListener("mouseup", handleMouseUp);
         };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     const handleResizerMouseDown = useCallback((e) => {
@@ -269,6 +269,77 @@ export default function SmartTerminal({
         document.body.style.userSelect = "none";
         e.preventDefault();
     }, [sidebarOpen, sidebarWidth]);
+
+    const cmdHistoryKey = profileId
+        ? `servera_cmd_history:profile:${profileId}`
+        : `servera_cmd_history:${user}@${ip}`;
+
+    // Append or update command history entry in shared storage
+    const recordExecutedCommand = useCallback(({
+        id = null,
+        command,
+        status = "completed",
+        exitCode = null,
+        duration = null,
+        source = "plan",
+    }) => {
+        if (!command || !command.trim()) return null;
+        const trimmed = command.trim();
+        const entryId = id || (Date.now().toString(36) + Math.random().toString(36).slice(2, 6));
+
+        try {
+            const raw = localStorage.getItem(cmdHistoryKey);
+            let prev = [];
+            if (raw) {
+                const parsed = JSON.parse(raw);
+                if (Array.isArray(parsed)) prev = parsed;
+            }
+            const existingIdx = prev.findIndex(item => item.id === entryId);
+            let updated;
+            if (existingIdx >= 0) {
+                updated = [...prev];
+                updated[existingIdx] = {
+                    ...updated[existingIdx],
+                    command: trimmed,
+                    status,
+                    exitCode: exitCode !== null ? exitCode : updated[existingIdx].exitCode,
+                    duration: duration !== null ? duration : updated[existingIdx].duration,
+                    source: source || updated[existingIdx].source,
+                };
+            } else {
+                const newEntry = {
+                    id: entryId,
+                    command: trimmed,
+                    status,
+                    exitCode,
+                    duration,
+                    source,
+                    timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+                };
+                updated = [newEntry, ...prev.slice(0, 199)];
+            }
+            localStorage.setItem(cmdHistoryKey, JSON.stringify(updated.slice(0, 150)));
+        } catch (err) {
+            console.warn("Failed to persist command history", err);
+        }
+
+        return entryId;
+    }, [cmdHistoryKey]);
+
+    // Global listener for commands dispatched from elsewhere in the app
+    useEffect(() => {
+        const handler = (e) => {
+            if (e.detail?.command) {
+                recordExecutedCommand({
+                    command: e.detail.command,
+                    status: e.detail.status || "executed",
+                    source: e.detail.source || "external",
+                });
+            }
+        };
+        window.addEventListener("servera-command-executed", handler);
+        return () => window.removeEventListener("servera-command-executed", handler);
+    }, [recordExecutedCommand]);
 
     // Initial load from localStorage
     useEffect(() => {
@@ -355,10 +426,14 @@ export default function SmartTerminal({
     // Listen for AI stream events
     useEffect(() => {
         let unlistenChunk, unlistenDone;
+        let cancelled = false;
+        // `cancelled` closes the gap between registering the listener and the
+        // promise resolving: an unmount in that window used to leave `unlisten`
+        // undefined, so the handler stayed attached for the rest of the session.
 
         listen("ai-response-chunk", (event) => {
             setStreamBuffer(prev => prev + event.payload);
-        }).then(f => unlistenChunk = f);
+        }).then(f => { if (cancelled) f(); else unlistenChunk = f; });
 
         listen("ai-response-done", () => {
             setStreamBuffer(prev => {
@@ -376,9 +451,10 @@ export default function SmartTerminal({
                 setAiLoading(false);
                 return "";
             });
-        }).then(f => unlistenDone = f);
+        }).then(f => { if (cancelled) f(); else unlistenDone = f; });
 
         return () => {
+            cancelled = true;
             if (unlistenChunk) unlistenChunk();
             if (unlistenDone) unlistenDone();
         };
@@ -387,6 +463,10 @@ export default function SmartTerminal({
     // Monitor terminal output for errors with a rolling buffer
     useEffect(() => {
         let unlisten;
+        let cancelled = false;
+        // `cancelled` closes the gap between registering the listener and the
+        // promise resolving: an unmount in that window used to leave `unlisten`
+        // undefined, so the handler stayed attached for the rest of the session.
         const bufferRef = { text: "" };
         const bufferTimeoutRef = { current: null };
 
@@ -445,9 +525,10 @@ export default function SmartTerminal({
             bufferTimeoutRef.current = setTimeout(() => {
                 checkBufferForErrors();
             }, 300); // Wait for potential follow-up chunks
-        }).then(f => unlisten = f);
+        }).then(f => { if (cancelled) f(); else unlisten = f; });
 
         return () => {
+            cancelled = true;
             if (unlisten) unlisten();
             if (bufferTimeoutRef.current) clearTimeout(bufferTimeoutRef.current);
         };
@@ -642,6 +723,14 @@ export default function SmartTerminal({
         const execId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
         const rcFile = `/tmp/.opspilot_rc_${execId}`;
 
+        // Track in Command History as running
+        recordExecutedCommand({
+            id: execId,
+            command: cmd.text,
+            status: "running",
+            source: "plan",
+        });
+
         // Wrap the command in a brace group and put the exit-code capture on the
         // group's closing line:
         //
@@ -678,6 +767,14 @@ export default function SmartTerminal({
 
         if (hasError) {
             const exitCode = timedOut ? -1 : code;
+            recordExecutedCommand({
+                id: execId,
+                command: cmd.text,
+                status: "failed",
+                exitCode,
+                duration,
+                source: "plan",
+            });
             setTimeline(prev => {
                 const next = [...prev];
                 const p = { ...next[planIdx], commands: [...next[planIdx].commands] };
@@ -722,6 +819,14 @@ export default function SmartTerminal({
             }
         } else {
             // Success — mark completed and proceed to next command
+            recordExecutedCommand({
+                id: execId,
+                command: cmd.text,
+                status: "completed",
+                exitCode: 0,
+                duration,
+                source: "plan",
+            });
             setTimeline(prev => {
                 const next = [...prev];
                 const p = { ...next[planIdx], commands: [...next[planIdx].commands] };
@@ -798,8 +903,13 @@ export default function SmartTerminal({
         });
     };
 
-    const executeSingleCommand = (code) => {
+    const executeSingleCommand = (code, source = "single") => {
         invoke("send_ssh_input", { sessionId: MAIN_SESSION_ID, input: code + "\n" });
+        recordExecutedCommand({
+            command: code,
+            status: "executed",
+            source,
+        });
     };
 
     const copyToClipboard = (text) => {
@@ -1032,7 +1142,7 @@ export default function SmartTerminal({
                                         <button className="op-icon-btn" onClick={() => removeCommand(planIdx, cmdIdx)} title="Remove">
                                             <Trash2 size={12} />
                                         </button>
-                                        <button className="op-icon-btn run" onClick={() => executeSingleCommand(cmd.text)} title="Run individually">
+                                        <button className="op-icon-btn run" onClick={() => executeSingleCommand(cmd.text, "plan")} title="Run individually">
                                             <Play size={12} />
                                         </button>
                                     </>
@@ -1062,7 +1172,7 @@ export default function SmartTerminal({
                             <span>BASH</span>
                             <div className="op-code-actions">
                                 <button className="op-icon-btn" onClick={() => copyToClipboard(code)}><Copy size={10} /></button>
-                                <button className="op-icon-btn run" onClick={() => executeSingleCommand(code)}><Play size={10} /> Run</button>
+                                <button className="op-icon-btn run" onClick={() => executeSingleCommand(code, "snippet")}><Play size={10} /> Run</button>
                             </div>
                         </div>
                         <pre className="op-code-content">{code}</pre>
@@ -1393,6 +1503,7 @@ export default function SmartTerminal({
                 </button>
             </div>
         </div>
-    </div>
+
+        </div>
     );
 }

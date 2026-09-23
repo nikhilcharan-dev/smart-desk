@@ -31,6 +31,7 @@ Tauri dev auto-runs `npm run dev` before launching (configured in `tauri.conf.js
 cd servera-app/src-tauri
 cargo build                  # Build Rust backend only
 cargo check                  # Type-check without building
+cargo test                   # Run the Rust unit tests (NOT `cargo test --lib` — there is no lib target)
 ```
 
 ### Website (`servera-web/`)
@@ -52,19 +53,33 @@ npm run format               # Biome auto-format
 **Frontend (React + Vite):**
 - Entry: `servera-app/src/main.jsx` → `App.jsx`
 - `App.jsx` has two states: unauthenticated (shows `ConnectionHub`/login) and connected (shows sidebar + active view)
-- 12+ feature views selected via sidebar navigation, defined in `constants.js`
+- 17 feature views selected via sidebar navigation, defined in `constants.js` (plus Settings).
+  All of them stay mounted once opened and are hidden with `display: none`, so any
+  `setInterval` in a view keeps running unless it is gated — see `hooks/usePolling.js`
 - Components in `servera-app/src/components/` — each is a self-contained feature panel (Dashboard, FileExplorer, SmartTerminal, ProcessManager, DockerManager, etc.)
 - Global command palette triggered via Ctrl+K
 - All Tauri backend calls use `invoke()` from `@tauri-apps/api/core`
 
 **Backend (Rust + Tauri 2):**
-- Entry: `servera-app/src-tauri/src/main.rs` — registers ~44 Tauri commands
-- `ssh_client.rs` — SSH connection management and SFTP operations using `ssh2` crate; stores sessions in a global `Mutex<Option<Session>>`
+- Entry: `servera-app/src-tauri/src/main.rs` — registers ~80 Tauri commands
+- `ssh_client.rs` — SSH connection management and SFTP operations using the `ssh2` crate
 - `ai_provider.rs` — Multi-provider AI integration (Ollama, OpenAI, Gemini, AWS Bedrock) with streaming support
 - `ai_config.rs` — AI configuration persistence to `~/.servera/ai_config.json`
 - `profile_manager.rs` — SSH profile storage to `~/.servera/profiles.json`
 - `local_ops.rs` — Local file ZIP/extract operations
+- `vault.rs` — Secrets Vault storage
+- `known_hosts.rs` — Host-key TOFU verification, prompted through the UI before any credential is sent
+- `wireguard/` — WireGuard gateway; `resolve_first_hop` rewrites the dial target for wg-mode profiles
+- `ssh_config/`, `vscode_remote.rs`, `os_support/` — `~/.ssh/config` import, VS Code Remote launch, per-OS metric/package commands
 - Credentials stored via OS keyring (`keyring` crate)
+
+**Connections are per session id, not global.** `AppState` holds two maps keyed by session id:
+`sessions` (interactive PTYs, `Arc<Mutex<Option<SshConnection>>>`) and `exec_conns` (a second
+SSH connection per session used by every `exec_ssh_command`). Log streams and tunnels each open
+their own connection on top. Things that follow from that and are easy to get wrong:
+- Each PTY has a reader thread (`spawn_read_thread`) that also pings every 10s; each exec
+  connection has `spawn_exec_keepalive_thread`. Both retire when their map entry is cleared.
+- UI polling must never be the thing keeping a connection alive — the keepalive threads are.
 
 **IPC Pattern:** React components call Rust functions via `invoke("command_name", { args })`. Rust functions are annotated with `#[tauri::command]` and registered in `main.rs` via `invoke_handler`.
 
@@ -85,7 +100,11 @@ npm run format               # Biome auto-format
 - **Linting**: ESLint for `servera-app`, Biome for `servera-web` — different tools, don't mix them.
 - **Bundle targets**: Windows (NSIS), Linux (DEB + AppImage). macOS builds configured but no DMG target in current config.
 - **App identifier**: `com.servera.smartdesk`
-- **No test framework** is currently configured in either project.
+- **Tests**: the Rust backend has `#[cfg(test)]` unit tests — run them with `cargo test`
+  from `servera-app/src-tauri` (17 as of Sept 2026, in `os_support`, `ssh_client` and
+  `wireguard`). `cargo test --lib` fails: the crate is a binary, so the tests live in
+  the `--bin servera` target. Neither npm project (`servera-app` frontend, `servera-web`)
+  has a JS test framework configured — no vitest/jest/playwright in either `package.json`.
 
 ## graphify
 

@@ -13,10 +13,10 @@ import "./DockerManager.css";
 
 // ─── Sub-components ──────────────────────────────────────────────────────────
 
-function ContainerLogs({ containerId, containerName, onClose }) {
+function ContainerLogs({ containerId, containerName, onClose, active = true }) {
     const [logLines, setLogLines] = useState([]);
     const [streaming, setStreaming] = useState(false);
-    const [tail, setTail] = useState(100);
+    const [tail] = useState(100);
     const logRef = useRef(null);
     const streamIdRef = useRef(null);
     const unlistenRef = useRef(null);
@@ -39,15 +39,18 @@ function ContainerLogs({ containerId, containerName, onClose }) {
         if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
     }, [logLines]);
 
+    const stopStream = useCallback(async () => {
+        if (streamIdRef.current) {
+            try { await invoke('stop_log_stream', { streamId: streamIdRef.current }); } catch { /* best-effort teardown — stream is being discarded anyway */ }
+            streamIdRef.current = null;
+        }
+        if (unlistenRef.current) { unlistenRef.current(); unlistenRef.current = null; }
+        setStreaming(false);
+    }, []);
+
     const toggleStream = useCallback(async () => {
         if (streaming) {
-            // Stop stream
-            if (streamIdRef.current) {
-                try { await invoke('stop_log_stream', { streamId: streamIdRef.current }); } catch { /* best-effort teardown — stream is being discarded anyway */ }
-                streamIdRef.current = null;
-            }
-            if (unlistenRef.current) { unlistenRef.current(); unlistenRef.current = null; }
-            setStreaming(false);
+            await stopStream();
             return;
         }
 
@@ -57,7 +60,9 @@ function ContainerLogs({ containerId, containerName, onClose }) {
         setStreaming(true);
 
         const unlisten = await listen(`log-stream:${sid}`, (event) => {
-            if (event.payload === '__EOF__') { setStreaming(false); return; }
+            // A container that stops ends the stream on its own. Release the
+            // listener and the backend handle too, not just the flag.
+            if (event.payload === '__EOF__') { stopStream(); return; }
             const newLines = event.payload.split('\n').filter(l => l.length > 0);
             if (newLines.length > 0) {
                 setLogLines(prev => {
@@ -79,7 +84,7 @@ function ContainerLogs({ containerId, containerName, onClose }) {
             // Fallback: use exec_ssh_command for simple tail
             setStreaming(false);
         }
-    }, [streaming, containerId]);
+    }, [streaming, containerId, stopStream]);
 
     useEffect(() => {
         return () => {
@@ -89,6 +94,28 @@ function ContainerLogs({ containerId, containerName, onClose }) {
             if (unlistenRef.current) unlistenRef.current();
         };
     }, []);
+
+    // `docker logs -f` holds its own SSH connection and used to keep shipping
+    // output after you left the Docker tab. Suspend it while hidden and resume
+    // on return, so an unattended stream never bills bandwidth.
+    const suspendedStreamRef = useRef(false);
+    const streamCtlRef = useRef(null);
+    useEffect(() => {
+        streamCtlRef.current = { toggleStream, streaming };
+    });
+
+    useEffect(() => {
+        const ctl = streamCtlRef.current;
+        if (!active) {
+            if (ctl.streaming) {
+                suspendedStreamRef.current = true;
+                ctl.toggleStream();
+            }
+        } else if (suspendedStreamRef.current) {
+            suspendedStreamRef.current = false;
+            ctl.toggleStream();
+        }
+    }, [active]);
 
     return (
         <div className="dm-logs-panel">
@@ -116,7 +143,7 @@ function ContainerLogs({ containerId, containerName, onClose }) {
 
 // ─── Main Component ──────────────────────────────────────────────────────────
 
-export default function DockerManager() {
+export default function DockerManager({ active = true }) {
     const [containers, setContainers] = useState([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
@@ -471,6 +498,7 @@ export default function DockerManager() {
                     containerId={logsTarget.id}
                     containerName={logsTarget.name}
                     onClose={() => setLogsTarget(null)}
+                    active={active}
                 />
             )}
         </div>

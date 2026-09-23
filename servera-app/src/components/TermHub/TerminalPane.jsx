@@ -62,9 +62,13 @@ export default function TerminalPane({ sessionId, profile, isActive, onFocus, on
 
         // Listen for SSH output for this session
         let unlisten;
+        let cancelled = false;
+        // `cancelled` closes the gap between registering the listener and the
+        // promise resolving: an unmount in that window used to leave `unlisten`
+        // undefined, so the handler stayed attached for the rest of the session.
         listen(`ssh-output:${sessionId}`, (e) => {
             term.write(e.payload);
-        }).then(fn => unlisten = fn);
+        }).then(fn => { if (cancelled) fn(); else unlisten = fn; });
 
         // Handle user input
         term.onData(data => {
@@ -119,6 +123,7 @@ export default function TerminalPane({ sessionId, profile, isActive, onFocus, on
         if (terminalRef.current) resizeObserver.observe(terminalRef.current);
 
         return () => {
+            cancelled = true;
             unlisten && unlisten();
             resizeObserver.disconnect();
             term.dispose();

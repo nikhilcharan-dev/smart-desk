@@ -14,7 +14,7 @@ mod vault;
 
 use ai_config::{AiConfig, AiConfigManager};
 use profile_manager::{Profile, ProfileManager};
-use ssh_client::{spawn_read_thread, spawn_log_reader, SshConnection, SshExecConn, SshTunnel};
+use ssh_client::{spawn_read_thread, spawn_exec_keepalive_thread, spawn_log_reader, SshConnection, SshExecConn, SshTunnel};
 use std::sync::{Arc, Mutex};
 use std::collections::{HashMap, HashSet};
 use tauri::{AppHandle, State, Manager};
@@ -345,6 +345,7 @@ async fn connect_to_profile(
 
         let exec = state.ensure_exec_conn(&session_id);
         *lock_exec(&exec) = Some(exec_conn);
+        spawn_exec_keepalive_thread(exec);
 
         spawn_read_thread(session_id, session, app);
         Ok(fingerprint)
@@ -383,6 +384,7 @@ async fn start_ssh_session(
         let exec_conn = SshExecConn::connect(&dial_ip, &user, dial_port, password.as_deref(), private_key.as_deref(), dial_jump.as_deref(), &app, &session_id, None)?;
         let exec = state.ensure_exec_conn(&session_id);
         *lock_exec(&exec) = Some(exec_conn);
+        spawn_exec_keepalive_thread(exec);
 
         spawn_read_thread(session_id, session, app);
         Ok(fingerprint)
@@ -1237,7 +1239,19 @@ async fn start_log_stream(
         let stop_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let shared_channel: SharedChannel = Arc::new(Mutex::new(Some(channel)));
 
-        spawn_log_reader(stream_id.clone(), shared_channel.clone(), stop_flag.clone(), app);
+        // Drop the registry entry once the reader stops. A stream that ends on
+        // its own — rotated file, removed path, a container that exits — only
+        // flipped a flag in the UI, and the frontend never called
+        // stop_log_stream for it, so the handle stayed in the map holding an
+        // entire SSH session open until logout. One leaked connection per
+        // finished stream.
+        let cleanup_app = app.clone();
+        let cleanup_id = stream_id.clone();
+        spawn_log_reader(stream_id.clone(), shared_channel.clone(), stop_flag.clone(), app, move || {
+            let state = cleanup_app.state::<AppState>();
+            let mut streams = state.log_streams.lock().unwrap_or_else(|p| p.into_inner());
+            streams.remove(&cleanup_id);
+        });
 
         let handle = LogStreamHandle {
             session,

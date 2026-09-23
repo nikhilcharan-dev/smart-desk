@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { RotateCw, Cpu, Server, Thermometer, HardDrive, Activity, ArrowDown, ArrowUp, Zap, Globe, Database } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { MAIN_SESSION_ID } from "../../utils/terminal";
+import { usePolling } from "../../hooks/usePolling";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import "./Dashboard.css";
 
@@ -30,7 +31,7 @@ function ProcBar({ value, color }) {
     );
 }
 
-export default function Dashboard({ user, ip, profileName }) {
+export default function Dashboard({ user, ip, profileName, active = true }) {
     const [stats, setStats] = useState({ os: "Loading...", uptime: "Loading...", kernel: "", arch: "", cpuCores: 0, disks: [], isVirt: false });
     const [history, setHistory] = useState([]);
     const [liveStats, setLiveStats] = useState({ cpuPct: 0, memPct: 0, memUsedStr: "0MB", memTotalStr: "0MB", rxSpeed: 0, txSpeed: 0, temp: "N/A" });
@@ -41,6 +42,15 @@ export default function Dashboard({ user, ip, profileName }) {
 
     const prevNetRef = useRef(null);
     const isFetchingRef = useRef(false);
+
+    // Per-host facts that cost an extra round-trip each to learn but never
+    // change while connected. `thermal` records whether this host exposes a
+    // readable sensor at all; on a VM it does not, and re-asking every 5s was
+    // two wasted commands per tick forever.
+    const hostProbeRef = useRef({ thermal: "unknown", virtChecked: false, isVirt: false });
+    useEffect(() => {
+        hostProbeRef.current = { thermal: "unknown", virtChecked: false, isVirt: false };
+    }, [user, ip]);
 
     // Trigger entry animation after mount
     useEffect(() => {
@@ -86,30 +96,47 @@ export default function Dashboard({ user, ip, profileName }) {
             } else {
                 const rm = await invoke("get_standard_metrics", { sessionId: MAIN_SESSION_ID });
 
-                // If temp is N/A, try direct fallback + detect virtualization
+                // If temp is N/A, try direct fallback + detect virtualization.
+                // Both answers are per-host and effectively static, so they are
+                // learned once instead of on every 5s tick.
                 let tempVal = rm.temp;
-                let isVirt = false;
+                let isVirt = hostProbeRef.current.isVirt;
                 if (!tempVal || tempVal === "N/A") {
-                    try {
-                        const fallback = await invoke("exec_ssh_command", {
-                            sessionId: MAIN_SESSION_ID,
-                            command: "cat /sys/devices/virtual/thermal/thermal_zone*/temp 2>/dev/null || cat /sys/class/hwmon/*/temp*_input 2>/dev/null | head -1 || echo ''"
-                        });
-                        const v = fallback.trim();
-                        if (v && !isNaN(Number(v))) {
-                            const n = Number(v);
-                            tempVal = n > 1000 ? `${(n / 1000).toFixed(1)}\u00b0C` : `${n.toFixed(1)}\u00b0C`;
+                    // Only ask for the sensor while it might still answer. Once
+                    // a host has shown it exposes none, this probe is skipped
+                    // for the rest of the session.
+                    if (hostProbeRef.current.thermal !== "unavailable") {
+                        try {
+                            const fallback = await invoke("exec_ssh_command", {
+                                sessionId: MAIN_SESSION_ID,
+                                command: "cat /sys/devices/virtual/thermal/thermal_zone*/temp 2>/dev/null || cat /sys/class/hwmon/*/temp*_input 2>/dev/null | head -1 || echo ''"
+                            });
+                            const v = fallback.trim();
+                            if (v && !isNaN(Number(v))) {
+                                const n = Number(v);
+                                tempVal = n > 1000 ? `${(n / 1000).toFixed(1)}°C` : `${n.toFixed(1)}°C`;
+                                hostProbeRef.current.thermal = "available";
+                            } else {
+                                hostProbeRef.current.thermal = "unavailable";
+                            }
+                        } catch {
+                            /* temperature is optional — many VMs/cloud hosts expose no thermal zone */
+                            hostProbeRef.current.thermal = "unavailable";
                         }
-                    } catch { /* temperature is optional \u2014 many VMs/cloud hosts expose no thermal zone */ }
-                    if (!tempVal || tempVal === "N/A") {
+                    }
+                    // Whether the host is virtualized cannot change under us,
+                    // so this runs exactly once per connection.
+                    if ((!tempVal || tempVal === "N/A") && !hostProbeRef.current.virtChecked) {
+                        hostProbeRef.current.virtChecked = true;
                         try {
                             const virtCheck = await invoke("exec_ssh_command", {
                                 sessionId: MAIN_SESSION_ID,
                                 command: "systemd-detect-virt 2>/dev/null || ([ -f /proc/cpuinfo ] && grep -qE 'hypervisor|QEMU|KVM|Xen|VMware|VirtualBox' /proc/cpuinfo && echo 'vm' || echo 'none')"
                             });
                             const vt = virtCheck.trim().toLowerCase();
-                            if (vt && vt !== "none" && vt !== "") isVirt = true;
+                            if (vt && vt !== "none" && vt !== "") hostProbeRef.current.isVirt = true;
                         } catch { /* virtualization hint is optional — ignore probe failures */ }
+                        isVirt = hostProbeRef.current.isVirt;
                     }
                 }
 
@@ -165,11 +192,10 @@ export default function Dashboard({ user, ip, profileName }) {
         }
     }, [user]);
 
-    useEffect(() => {
-        fetchStats();
-        const interval = setInterval(fetchStats, 5000);
-        return () => clearInterval(interval);
-    }, [fetchStats]);
+    // Polls only while the Analytics Hub is the visible tab. The metrics blob is
+    // a dozen commands per tick, so leaving it running behind File Explorer was
+    // the single largest source of idle traffic.
+    usePolling(fetchStats, 5000, active);
 
     const getColor = (v) => v > 80 ? "#ef4444" : v > 60 ? "#f59e0b" : "#4f8fff";
     const primaryDisk = stats.disks[0] || { mount: "/", pct: 0, usedGB: "0", totalGB: "0" };

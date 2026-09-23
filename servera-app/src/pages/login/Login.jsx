@@ -7,6 +7,7 @@ import { MAIN_SESSION_ID } from "../../utils/terminal";
 import logo from "../../assets/logo-32.png";
 import ImportWizard from "../../components/Onboarding/ImportWizard";
 import Modal from "../../components/Common/Modal";
+import WindowControls from "../../components/Common/WindowControls";
 import { Download, Plus, Server, Pencil, Trash2, Key, Lock, ShieldCheck, Waypoints, Globe, User, Hash, Tag, LayoutList, LayoutGrid, Monitor, Laptop, ChevronRight, Shield } from "lucide-react";
 
 const WG_STATUS_LABELS = {
@@ -75,9 +76,39 @@ function LabeledInput({ icon: Icon, label, children }) {
     );
 }
 
-/* ───────── OS Icon (profile avatar glyph) ───────── */
+/* ───────── Modern Server Monograms (Option 3) ───────── */
 
-function OsIcon({ os, size = 16 }) {
+function OsIcon({ os, name = "", size = 16 }) {
+    if (name) {
+        const cleaned = name.trim().replace(/[^a-zA-Z0-9_\-\s]/g, "");
+        const words = cleaned.split(/[-_\s.]+/).filter(Boolean);
+        let initials = "";
+        if (words.length >= 2) {
+            initials = (words[0][0] + words[1][0]).toUpperCase();
+        } else if (cleaned.length >= 2) {
+            initials = cleaned.slice(0, 2).toUpperCase();
+        } else if (cleaned.length === 1) {
+            initials = cleaned.toUpperCase();
+        }
+
+        if (initials) {
+            return (
+                <span
+                    style={{
+                        fontFamily: "'Oxanium', 'Space Grotesk', system-ui, sans-serif",
+                        fontWeight: 800,
+                        fontSize: `${Math.round(size * 0.72)}px`,
+                        letterSpacing: "0.5px",
+                        lineHeight: 1,
+                        userSelect: "none",
+                    }}
+                >
+                    {initials}
+                </span>
+            );
+        }
+    }
+
     if (os === "windows") return <Monitor size={size} />;
     if (os === "darwin") return <Laptop size={size} />;
     return <Server size={size} />;
@@ -556,7 +587,11 @@ export default function ConnectionHub({ isEntering, setConnected, setUser: setGl
 
     return (
         <div className={`login-wrapper${isEntering ? " login-entering" : ""}`}>
-            <div className="login-header">
+            <div className="login-window-titlebar" data-tauri-drag-region>
+                <div className="login-window-title">Servera</div>
+                <WindowControls />
+            </div>
+            <div className="login-header" data-tauri-drag-region>
                 <div style={{ display: "flex", alignItems: "center", gap: "24px", justifyContent: "center" }}>
                     <img src={logo} alt="Servera Logo" style={{ width: 100, height: 100 }} />
                     <h1 className="login-title" style={{ marginBottom: 0, fontSize: "3.5rem" }}>Servera</h1>
@@ -641,7 +676,7 @@ export default function ConnectionHub({ isEntering, setConnected, setUser: setGl
                                             </button>
                                         </div>
                                         <div className="tile-avatar" style={{ "--pc": p.color || "#3b82f6" }} title={p.remote_os || "linux"}>
-                                            <OsIcon os={p.remote_os} size={18} />
+                                            <OsIcon os={p.remote_os} name={p.name} size={18} />
                                         </div>
                                         <div className="tile-name" title={p.name}>{p.name}</div>
                                         <div className="tile-host">{p.ip}<span className="tile-port">:{p.port || 22}</span></div>
@@ -656,7 +691,7 @@ export default function ConnectionHub({ isEntering, setConnected, setUser: setGl
                                         onClick={() => handleProfileConnect(p)}
                                     >
                                         <div className="profile-avatar" style={{ "--pc": p.color || "#3b82f6" }} title={p.remote_os || "linux"}>
-                                            <OsIcon os={p.remote_os} size={16} />
+                                            <OsIcon os={p.remote_os} name={p.name} size={16} />
                                         </div>
                                         <div className="profile-info">
                                             <span className="profile-name" title={p.name}>{p.name}</span>
@@ -704,7 +739,7 @@ export default function ConnectionHub({ isEntering, setConnected, setUser: setGl
                         </div>
 
                         <div className="tunnels-status-list">
-                            {tunnels.length === 0 && profiles.filter(p => p.tags?.includes("gateway")).length === 0 ? (
+                            {tunnels.length === 0 && profiles.filter(p => p.wg_config || p.tags?.includes("gateway")).length === 0 ? (
                                 <div className="empty-state">
                                     <Waypoints size={28} strokeWidth={1.2} />
                                     <span>No active gateways</span>
@@ -713,10 +748,12 @@ export default function ConnectionHub({ isEntering, setConnected, setUser: setGl
                             ) : (
                                 <>
                                     {/* 1. Show saved gateways (Active or Offline) */}
-                                    {profiles.filter(p => p.tags?.includes("gateway")).map(p => {
-                                        const isActive = tunnels.some(t => t.id.includes(p.ip));
+                                    {profiles.filter(p => p.wg_config || p.tags?.includes("gateway")).map(p => {
                                         const isWg = !!p.wg_config;
-                                        const wgLive = isWg && wgStatus?.profileId === p.id ? wgStatus : null;
+                                        const wgLive = isWg && (wgStatus?.profileId === p.id || (wgStatus?.endpoint && p.wg_config?.endpoint && wgStatus.endpoint === p.wg_config.endpoint)) ? wgStatus : null;
+                                        const isWgActive = wgLive && wgLive.status !== "stopped" && wgLive.status !== "error";
+                                        const isSshActive = tunnels.some(t => t.id.includes(p.ip) || (p.id && t.id.includes(p.id)));
+                                        const isActive = isWg ? isWgActive : isSshActive;
                                         const statusLabel = wgLive
                                             ? (WG_STATUS_LABELS[wgLive.status] || wgLive.status)
                                             : (isActive ? "ACTIVE" : "SAVED");

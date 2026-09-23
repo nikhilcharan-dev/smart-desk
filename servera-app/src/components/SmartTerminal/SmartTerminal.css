@@ -1240,3 +1240,448 @@
 [data-theme="one-dark"] .sender-info { color: #61afef !important; }
 [data-theme="one-dark"] .op-empty-state h3 { color: #abb2bf !important; }
 [data-theme="one-dark"] .op-layout-toggle { background: #2c313a !important; border-color: #3e4451 !important; }
+
+/* ========================================
+   COMMAND HISTORY RIGHT PANEL
+   ======================================== */
+
+.op-history-panel {
+    align-self: stretch;
+    background: #0d1117;
+    border-left: 1px solid #21262d;
+    display: flex;
+    flex-direction: column;
+    transition: width 0.25s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.25s;
+    flex-shrink: 0;
+    overflow: hidden;
+    position: relative;
+    z-index: 10;
+}
+
+.op-history-panel.collapsed {
+    width: 0 !important;
+    opacity: 0;
+    pointer-events: none;
+    border-left: none;
+}
+
+.op-history-resizer {
+    width: 4px;
+    background: transparent;
+    cursor: col-resize;
+    flex-shrink: 0;
+    transition: background 0.15s;
+    z-index: 11;
+}
+
+.op-history-resizer:hover,
+.op-history-resizer:active {
+    background: #1f6feb;
+}
+
+.op-history-header {
+    height: 48px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 14px;
+    border-bottom: 1px solid #21262d;
+    background: #0d1117;
+    flex-shrink: 0;
+}
+
+.op-history-header-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: #e6edf3;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.op-history-count-badge {
+    font-size: 10px;
+    font-weight: 700;
+    background: rgba(56, 139, 253, 0.15);
+    color: #58a6ff;
+    border: 1px solid rgba(56, 139, 253, 0.3);
+    padding: 1px 7px;
+    border-radius: 12px;
+}
+
+.op-history-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+/* ── History Search & Filters ── */
+.op-history-controls {
+    padding: 10px 12px 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    border-bottom: 1px solid #21262d;
+    background: #0d1117;
+    flex-shrink: 0;
+}
+
+.op-history-search-box {
+    display: flex;
+    align-items: center;
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    padding: 4px 8px;
+    gap: 6px;
+    transition: border-color 0.15s;
+}
+
+.op-history-search-box:focus-within {
+    border-color: #58a6ff;
+}
+
+.op-history-search-input {
+    background: transparent;
+    border: none;
+    outline: none;
+    color: #c9d1d9;
+    font-size: 12px;
+    width: 100%;
+}
+
+.op-history-search-input::placeholder {
+    color: #6e7681;
+}
+
+.op-history-filter-pills {
+    display: flex;
+    gap: 4px;
+}
+
+.op-history-pill {
+    background: #161b22;
+    border: 1px solid #30363d;
+    color: #8b949e;
+    font-size: 11px;
+    font-weight: 500;
+    padding: 2px 8px;
+    border-radius: 12px;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.op-history-pill:hover {
+    color: #c9d1d9;
+    background: #21262d;
+}
+
+.op-history-pill.active {
+    background: #1f6feb22;
+    border-color: #1f6feb;
+    color: #58a6ff;
+    font-weight: 600;
+}
+
+/* ── Quick Run Command Input ── */
+.op-history-quick-run {
+    padding: 6px 12px 10px;
+    border-bottom: 1px solid #21262d;
+    background: #0d1117;
+    flex-shrink: 0;
+}
+
+.op-history-quick-form {
+    display: flex;
+    align-items: center;
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    padding: 2px 4px 2px 8px;
+    gap: 6px;
+}
+
+.op-history-quick-prompt {
+    color: #58a6ff;
+    font-weight: 700;
+    font-size: 12px;
+    font-family: monospace;
+    user-select: none;
+}
+
+.op-history-quick-input {
+    background: transparent;
+    border: none;
+    outline: none;
+    color: #e6edf3;
+    font-size: 11px;
+    font-family: monospace;
+    flex: 1;
+    min-width: 0;
+}
+
+.op-history-quick-input::placeholder {
+    color: #6e7681;
+}
+
+.op-history-quick-btn {
+    background: #21262d;
+    border: 1px solid #30363d;
+    color: #58a6ff;
+    border-radius: 4px;
+    padding: 4px 6px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s;
+}
+
+.op-history-quick-btn:hover:not(:disabled) {
+    background: #1f6feb;
+    color: #ffffff;
+    border-color: #1f6feb;
+}
+
+.op-history-quick-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+/* ── History Items List ── */
+.op-history-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.op-history-list::-webkit-scrollbar {
+    width: 5px;
+}
+
+.op-history-list::-webkit-scrollbar-thumb {
+    background: #21262d;
+    border-radius: 3px;
+}
+
+.op-history-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 40px 16px;
+    color: #6e7681;
+    text-align: center;
+    gap: 8px;
+}
+
+.op-history-empty h4 {
+    color: #8b949e;
+    font-size: 13px;
+    margin: 0;
+}
+
+.op-history-empty p {
+    font-size: 11px;
+    margin: 0;
+    line-height: 1.4;
+    max-width: 200px;
+}
+
+/* ── History Card ── */
+.op-history-card {
+    background: #161b22;
+    border: 1px solid #21262d;
+    border-radius: 6px;
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    transition: all 0.15s;
+}
+
+.op-history-card:hover {
+    border-color: #388bfd44;
+    background: #1c2128;
+}
+
+.op-history-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 11px;
+}
+
+.op-history-card-meta {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.op-history-source-badge {
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 1px 5px;
+    border-radius: 4px;
+}
+
+.op-history-source-badge.plan {
+    background: rgba(56, 139, 253, 0.15);
+    color: #58a6ff;
+    border: 1px solid rgba(56, 139, 253, 0.3);
+}
+
+.op-history-source-badge.snippet {
+    background: rgba(163, 113, 247, 0.15);
+    color: #bc8cff;
+    border: 1px solid rgba(163, 113, 247, 0.3);
+}
+
+.op-history-source-badge.server {
+    background: rgba(46, 160, 67, 0.15);
+    color: #3fb950;
+    border: 1px solid rgba(46, 160, 67, 0.3);
+}
+
+.op-history-source-badge.manual {
+    background: rgba(210, 153, 34, 0.15);
+    color: #d29922;
+    border: 1px solid rgba(210, 153, 34, 0.3);
+}
+
+.op-history-time {
+    color: #6e7681;
+    font-size: 10px;
+}
+
+.op-history-duration {
+    color: #8b949e;
+    font-size: 10px;
+    background: #21262d;
+    padding: 1px 4px;
+    border-radius: 3px;
+}
+
+.op-history-cmd-box {
+    position: relative;
+    background: #0d1117;
+    border: 1px solid #21262d;
+    border-radius: 4px;
+    padding: 6px 8px;
+    overflow-x: auto;
+}
+
+.op-history-cmd {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    font-size: 11px;
+    color: #e6edf3;
+    white-space: pre-wrap;
+    word-break: break-all;
+    line-height: 1.4;
+    user-select: text;
+}
+
+.op-history-card-footer {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 4px;
+    margin-top: 2px;
+}
+
+.op-history-btn {
+    background: transparent;
+    border: 1px solid transparent;
+    color: #8b949e;
+    border-radius: 4px;
+    padding: 3px 6px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 10px;
+    transition: all 0.15s;
+}
+
+.op-history-btn:hover {
+    background: #21262d;
+    color: #c9d1d9;
+    border-color: #30363d;
+}
+
+.op-history-btn.run {
+    color: #3fb950;
+}
+
+.op-history-btn.run:hover {
+    background: rgba(46, 160, 67, 0.15);
+    border-color: rgba(46, 160, 67, 0.4);
+    color: #56d364;
+}
+
+.op-history-btn.delete:hover {
+    color: #f85149;
+    background: rgba(248, 81, 73, 0.1);
+    border-color: rgba(248, 81, 73, 0.3);
+}
+
+/* ── Header Badge Indicator ── */
+.op-history-header-badge {
+    position: absolute;
+    top: -3px;
+    right: -3px;
+    background: #1f6feb;
+    color: #ffffff;
+    font-size: 9px;
+    font-weight: 700;
+    min-width: 14px;
+    height: 14px;
+    border-radius: 7px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 3px;
+    border: 2px solid #0d1117;
+}
+
+/* ── Theme Overrides for History Panel ── */
+[data-theme="dracula"] .op-history-panel { background: #282a36 !important; border-left-color: #44475a !important; }
+[data-theme="dracula"] .op-history-header { background: #282a36 !important; border-bottom-color: #44475a !important; }
+[data-theme="dracula"] .op-history-controls,
+[data-theme="dracula"] .op-history-quick-run { background: #282a36 !important; border-bottom-color: #44475a !important; }
+[data-theme="dracula"] .op-history-card { background: #21222c !important; border-color: #44475a !important; }
+[data-theme="dracula"] .op-history-cmd-box { background: #191a21 !important; border-color: #44475a !important; }
+
+[data-theme="nord"] .op-history-panel { background: #2e3440 !important; border-left-color: #3b4252 !important; }
+[data-theme="nord"] .op-history-header { background: #2e3440 !important; border-bottom-color: #3b4252 !important; }
+[data-theme="nord"] .op-history-controls,
+[data-theme="nord"] .op-history-quick-run { background: #2e3440 !important; border-bottom-color: #3b4252 !important; }
+[data-theme="nord"] .op-history-card { background: #3b4252 !important; border-color: #434c5e !important; }
+[data-theme="nord"] .op-history-cmd-box { background: #242933 !important; border-color: #434c5e !important; }
+
+[data-theme="monokai"] .op-history-panel { background: #272822 !important; border-left-color: #3e3d32 !important; }
+[data-theme="monokai"] .op-history-header { background: #272822 !important; border-bottom-color: #3e3d32 !important; }
+[data-theme="monokai"] .op-history-controls,
+[data-theme="monokai"] .op-history-quick-run { background: #272822 !important; border-bottom-color: #3e3d32 !important; }
+[data-theme="monokai"] .op-history-card { background: #383830 !important; border-color: #49483e !important; }
+[data-theme="monokai"] .op-history-cmd-box { background: #1e1f1c !important; border-color: #49483e !important; }
+
+[data-theme="solarized"] .op-history-panel { background: #002b36 !important; border-left-color: #073642 !important; }
+[data-theme="solarized"] .op-history-header { background: #002b36 !important; border-bottom-color: #073642 !important; }
+[data-theme="solarized"] .op-history-controls,
+[data-theme="solarized"] .op-history-quick-run { background: #002b36 !important; border-bottom-color: #073642 !important; }
+[data-theme="solarized"] .op-history-card { background: #073642 !important; border-color: #586e75 !important; }
+[data-theme="solarized"] .op-history-cmd-box { background: #00212b !important; border-color: #586e75 !important; }
+
+[data-theme="one-dark"] .op-history-panel { background: #282c34 !important; border-left-color: #3e4451 !important; }
+[data-theme="one-dark"] .op-history-header { background: #282c34 !important; border-bottom-color: #3e4451 !important; }
+[data-theme="one-dark"] .op-history-controls,
+[data-theme="one-dark"] .op-history-quick-run { background: #282c34 !important; border-bottom-color: #3e4451 !important; }
+[data-theme="one-dark"] .op-history-card { background: #2c313a !important; border-color: #3e4451 !important; }
+[data-theme="one-dark"] .op-history-cmd-box { background: #21252b !important; border-color: #3e4451 !important; }
+

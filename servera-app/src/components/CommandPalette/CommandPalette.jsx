@@ -26,6 +26,7 @@ const ACTIONS = [
     { id: 'nav-permissions', name: 'Access Control', desc: 'File permissions & user access', icon: ShieldCheck, group: 'Navigate', action: 'setView', value: 'permissions' },
     { id: 'nav-settings', name: 'Settings', desc: 'Configure app, AI & sidebar', icon: Settings, group: 'Navigate', action: 'setView', value: 'settings' },
     // Actions
+    { id: 'act-split-terminal', name: 'Split Terminal (Alt+T)', desc: 'Open parallel terminal session to same VM', icon: Terminal, group: 'Actions', action: 'openSplitTerminal', keywords: 'split terminal parallel add new window bash ssh' },
     { id: 'act-quick-vault', name: 'Quick Secrets Vault (Alt+V)', desc: 'Open spotlight quick-copy flyout', icon: KeyRound, group: 'Actions', action: 'openQuickVault', keywords: 'vault secret password copy' },
     { id: 'act-disconnect', name: 'Disconnect', desc: 'Close SSH session', icon: LogOut, group: 'Actions', action: 'disconnect' },
 ];

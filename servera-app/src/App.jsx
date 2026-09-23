@@ -1,10 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { LayoutDashboard, FolderOpen, Terminal as TerminalIcon, Monitor, LogOut, Cpu, Network, ScrollText, Code2, Box, Shield, PackageOpen, RefreshCw, ShieldCheck, Sparkles, Palette, KeyRound } from "lucide-react";
+import { LayoutDashboard, FolderOpen, Terminal as TerminalIcon, Monitor, LogOut, Cpu, Network, ScrollText, Code2, Box, Shield, PackageOpen, RefreshCw, ShieldCheck, Sparkles, Palette, KeyRound, Plus, Columns2, Rows, Clock } from "lucide-react";
 
 import "./App.css";
 import { MAIN_SESSION_ID, fitAndResize } from "./utils/terminal";
@@ -12,6 +12,8 @@ import ConnectionHub from "./pages/login/Login.jsx";
 import FileExplorerLayout from "./components/FileExplorer/FileExplorerLayout";
 import Dashboard from "./components/Dashboard/Dashboard";
 import SmartTerminal from "./components/SmartTerminal/SmartTerminal";
+import TerminalSplitPane from "./components/SmartTerminal/TerminalSplitPane";
+import CommandHistoryPanel from "./components/SmartTerminal/CommandHistoryPanel";
 import TermHub from "./components/TermHub/TermHub";
 import SettingsHub from "./components/Settings/SettingsHub";
 import ErrorBoundary from "./components/ErrorBoundary";
@@ -42,6 +44,37 @@ import StartupAnimation from "./components/StartupAnimation/StartupAnimation";
 // Matches "localhost:PORT" / "127.0.0.1:PORT" printed by dev servers in
 // terminal output, so they can be forwarded and opened in Cloud Browser.
 const LOCAL_LINK_RE = /\b(?:localhost|127\.0\.0\.1):(\d{2,5})\b/g;
+
+// Every view still mounts after a connect, and once mounted none of them ever
+// unmount — scroll position, filters and open panels survive a tab switch. What
+// changed is that they no longer mount all at once: that fired every panel's
+// mount-time command simultaneously (ufw status, ss -tulpn, docker ps,
+// apt list --upgradable, ansible/terraform detection, ...) down a single exec
+// connection, which is what made login slow.
+//
+// So they queue instead. These three are what people actually land on and come
+// up first, close together; everything else follows one at a time behind them.
+// Opening a view early promotes it — it mounts immediately rather than waiting
+// for its slot (see the activeView effect).
+//
+// 'terminal' is in the priority list deliberately and is never unmounted or
+// gated: the shell has to stay alive for the whole login session so in-progress
+// work is never lost.
+const WARMUP_VIEWS = ["dashboard", "files", "terminal"];
+const WARMUP_STAGGER_MS = 700;
+
+// Ceiling on silent reconnects after a dropped session, and how long the
+// connection must hold before that budget is handed back.
+const AUTO_RECONNECT_MAX_ATTEMPTS = 3;
+const AUTO_RECONNECT_RESET_MS = 60_000;
+
+// The rest of the queue, derived from the sidebar so a newly added feature
+// joins it automatically. Wider spacing — nothing here is being looked at yet.
+const BACKGROUND_VIEWS = [
+    ...DEFAULT_SIDEBAR_ITEMS.map(item => item.id).filter(id => !WARMUP_VIEWS.includes(id)),
+    "settings",
+];
+const BACKGROUND_STAGGER_MS = 900;
 
 /* ─────────────────────────────────────
    TERMINAL THEMES
@@ -134,11 +167,59 @@ export default function App() {
     const [connPrivateKey, setConnPrivateKey] = useState("");
     const [connProxyJump, setConnProxyJump] = useState("");
     const [isReconnecting, setIsReconnecting] = useState(false);
+    // Set when the backend reports the transport died under us, cleared once a
+    // reconnect succeeds. Drops used to be silent — the reader thread emitted
+    // `ssh-error:<id>` and nothing listened, so the first sign of trouble was a
+    // command failing minutes later.
+    const [connectionLost, setConnectionLost] = useState(null);
+    // Budget for silent reconnect attempts, so a flapping host cannot put the
+    // app in a reconnect loop. Reset by a manual retry or a stable minute.
+    const autoReconnectRef = useRef({ attempts: 0, lastAt: 0 });
     // eslint-disable-next-line no-unused-vars
     const [hostFingerprint, setHostFingerprint] = useState("");
 
     // Views: 'dashboard' | 'files' | 'terminal' | 'termhub' | 'processes' | 'ports' | 'logs' | 'snippets' | 'ai-settings'
     const [activeView, setActiveView] = useState("dashboard");
+
+    // Which views have been mounted. A view is added when it is first opened
+    // and never removed, so its state (scroll position, filters, an open
+    // terminal) survives switching away. See WARMUP_VIEWS.
+    const [mountedViews, setMountedViews] = useState(() => new Set());
+
+    // Staged mount on connect: the priority views first, then everything else,
+    // one after another instead of every panel racing for the same exec
+    // connection at once.
+    useEffect(() => {
+        if (!connected) {
+            setMountedViews(new Set());
+            return;
+        }
+        setMountedViews(new Set([WARMUP_VIEWS[0]]));
+
+        const mount = (id) =>
+            setMountedViews(prev => (prev.has(id) ? prev : new Set(prev).add(id)));
+
+        // `at` accumulates across both spreads, so the background queue starts
+        // where the priority one finished rather than overlapping it.
+        let at = 0;
+        const timers = [
+            ...WARMUP_VIEWS.slice(1).map(id => {
+                at += WARMUP_STAGGER_MS;
+                return setTimeout(() => mount(id), at);
+            }),
+            ...BACKGROUND_VIEWS.map(id => {
+                at += BACKGROUND_STAGGER_MS;
+                return setTimeout(() => mount(id), at);
+            }),
+        ];
+        return () => timers.forEach(clearTimeout);
+    }, [connected]);
+
+    // Opening a view that has not reached its slot yet mounts it right away.
+    useEffect(() => {
+        if (!connected) return;
+        setMountedViews(prev => (prev.has(activeView) ? prev : new Set(prev).add(activeView)));
+    }, [connected, activeView]);
     const [isConnecting, setIsConnecting] = useState(false);
     const [cmdOpen, setCmdOpen] = useState(false);
     const [quickVaultOpen, setQuickVaultOpen] = useState(false);
@@ -170,7 +251,22 @@ export default function App() {
         localStorage.setItem('sidebarItems', JSON.stringify(items));
     };
 
-    // Global listeners: Command Palette (Ctrl+K) & Quick Vault (Alt+V)
+    // Multi-pane Terminal State
+    const [terminalPanes, setTerminalPanes] = useState([
+        { id: MAIN_SESSION_ID, title: "Terminal 1 (Primary)", isPrimary: true },
+    ]);
+    const [activeTermPaneId, setActiveTermPaneId] = useState(MAIN_SESSION_ID);
+    const [termSplitLayout, setTermSplitLayout] = useState("columns"); // 'columns' | 'rows'
+    const [termSplitRatio, setTermSplitRatio] = useState(50); // % for first pane when 2 panes
+    const activeTermPaneIdRef = useRef(activeTermPaneId);
+    activeTermPaneIdRef.current = activeTermPaneId;
+
+    const termSplitResizerDragging = useRef(false);
+    const termMultiPanesRef = useRef(null);
+    const openSplitTerminalRef = useRef(null);
+    const closeSplitTerminalRef = useRef(null);
+
+    // Global listeners: Command Palette (Ctrl+K), Quick Vault (Alt+V), Split Terminal (Alt+T / Alt+W)
     useEffect(() => {
         const handleKeyDown = (e) => {
             if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
@@ -181,13 +277,26 @@ export default function App() {
                 e.preventDefault();
                 setQuickVaultOpen(prev => !prev);
             }
+            if (e.altKey && e.key.toLowerCase() === 't') {
+                e.preventDefault();
+                openSplitTerminalRef.current?.();
+            }
+            if (e.altKey && e.key.toLowerCase() === 'w') {
+                e.preventDefault();
+                if (activeTermPaneIdRef.current && activeTermPaneIdRef.current !== MAIN_SESSION_ID) {
+                    closeSplitTerminalRef.current?.(activeTermPaneIdRef.current);
+                }
+            }
         };
         const handleOpenVaultEvent = () => setQuickVaultOpen(true);
+        const handleOpenSplitEvent = () => openSplitTerminalRef.current?.();
         window.addEventListener('keydown', handleKeyDown);
         window.addEventListener('open-quick-vault', handleOpenVaultEvent);
+        window.addEventListener('open-split-terminal', handleOpenSplitEvent);
         return () => {
             window.removeEventListener('keydown', handleKeyDown);
             window.removeEventListener('open-quick-vault', handleOpenVaultEvent);
+            window.removeEventListener('open-split-terminal', handleOpenSplitEvent);
         };
     }, []);
 
@@ -220,8 +329,15 @@ export default function App() {
     };
     const hideTip = () => setSidebarTip(null);
 
+    // Command History panel in manual user terminal
+    const [isTermHistoryOpen, setIsTermHistoryOpen] = useState(false);
+
     // Terminal theme
     const [termThemeId, setTermThemeId] = useState(() => localStorage.getItem("term_theme") || "hacker");
+    const termThemeIdRef = useRef(termThemeId);
+    useEffect(() => {
+        termThemeIdRef.current = termThemeId;
+    }, [termThemeId]);
     const [termThemePickerOpen, setTermThemePickerOpen] = useState(false);
     const appMainRef = useRef(null);
     const resizerDragging = useRef(false);
@@ -229,7 +345,7 @@ export default function App() {
     useEffect(() => {
         if (!connected) return;
 
-        const initialTheme = TERMINAL_THEMES.find(t => t.id === termThemeId)?.theme
+        const initialTheme = TERMINAL_THEMES.find(t => t.id === termThemeIdRef.current)?.theme
             ?? TERMINAL_THEMES[0].theme;
 
         const term = new Terminal({
@@ -256,6 +372,14 @@ export default function App() {
 
         setTimeout(handleResize, 200);
         window.addEventListener("resize", handleResize);
+        window.addEventListener("focus", handleResize);
+
+        const resizeObserver = new ResizeObserver(() => {
+            handleResize();
+        });
+        if (terminalRef.current) {
+            resizeObserver.observe(terminalRef.current);
+        }
 
         term.onData(data => {
             invoke("send_ssh_input", { sessionId: MAIN_SESSION_ID, input: data });
@@ -269,6 +393,13 @@ export default function App() {
             if (e.altKey && e.key.toLowerCase() === 'v') {
                 e.preventDefault();
                 setQuickVaultOpen(prev => !prev);
+                return false;
+            }
+
+            // Alt+T → Open split terminal directly from terminal
+            if (e.altKey && e.key.toLowerCase() === 't') {
+                e.preventDefault();
+                openSplitTerminalRef.current?.();
                 return false;
             }
 
@@ -328,12 +459,19 @@ export default function App() {
 
         // Single SSH output listener — shared with SmartTerminal via xtermRef
         let unlisten;
+        let cancelled = false;
+        // `cancelled` closes the gap between registering the listener and the
+        // promise resolving: an unmount in that window used to leave `unlisten`
+        // undefined, so the handler stayed attached for the rest of the session.
         listen(`ssh-output:${MAIN_SESSION_ID}`, e => {
             xtermRef.current?.write(e.payload);
-        }).then(fn => (unlisten = fn));
+        }).then(fn => { if (cancelled) fn(); else unlisten = fn; });
 
         return () => {
             window.removeEventListener("resize", handleResize);
+            window.removeEventListener("focus", handleResize);
+            resizeObserver.disconnect();
+            cancelled = true;
             if (unlisten) unlisten();
             term.dispose();
             fitAddonRef.current = null;
@@ -347,6 +485,10 @@ export default function App() {
         if (t && xtermRef.current) {
             xtermRef.current.options.theme = t.theme;
         }
+    }, [termThemeId]);
+
+    const currentTermTheme = useMemo(() => {
+        return TERMINAL_THEMES.find(t => t.id === termThemeId)?.theme ?? TERMINAL_THEMES[0].theme;
     }, [termThemeId]);
 
     const openInCloudBrowser = useCallback((url) => {
@@ -423,7 +565,7 @@ export default function App() {
                 fitAndResize(fitAddonRef.current, MAIN_SESSION_ID);
             }, 300);
         }
-    }, [isTerminalOpen, connected, activeView, smartLayout, splitRatio, showOpsPilot]);
+    }, [isTerminalOpen, connected, activeView, smartLayout, splitRatio, showOpsPilot, terminalPanes.length, termSplitLayout, termSplitRatio]);
 
     // Draggable resizer between terminal and AI IDE
     const handleResizerMouseDown = useCallback((e) => {
@@ -453,7 +595,107 @@ export default function App() {
 
         document.addEventListener("mousemove", onMouseMove);
         document.addEventListener("mouseup", onMouseUp);
-    }, [smartLayout]);
+    }, []);
+
+    // Open a parallel split terminal session connected to the same VM
+    const openSplitTerminal = useCallback(async () => {
+        if (!connected) return;
+        if (terminalPanes.length >= 4) return;
+
+        if (!isTerminalOpen && !terminalOnlyMode) {
+            setTerminalOpen(true);
+        }
+
+        const newSessionId = `sub-term-${Date.now()}`;
+        const newTitle = `Terminal ${terminalPanes.length + 1}`;
+
+        try {
+            if (connectedProfileId) {
+                await invoke("connect_to_profile", {
+                    profileId: connectedProfileId,
+                    sessionId: newSessionId,
+                });
+            } else {
+                const { ip, user, connPort, connPassword, connPrivateKey, connProxyJump } = connParamsRef.current;
+                await invoke("start_ssh_session", {
+                    sessionId: newSessionId,
+                    ip,
+                    user,
+                    port: Number(connPort) || 22,
+                    password: connPassword || null,
+                    privateKey: connPrivateKey || null,
+                    proxyJump: connProxyJump || null,
+                });
+            }
+
+            setTerminalPanes(prev => [...prev, { id: newSessionId, title: newTitle, isPrimary: false }]);
+            setActiveTermPaneId(newSessionId);
+
+            if (fitAddonRef.current) {
+                setTimeout(() => fitAndResize(fitAddonRef.current, MAIN_SESSION_ID), 100);
+            }
+        } catch (err) {
+            console.error("Failed to open split terminal session:", err);
+        }
+    }, [connected, connectedProfileId, isTerminalOpen, terminalOnlyMode, terminalPanes.length]);
+
+    // Close a secondary split terminal session
+    const closeSplitTerminal = useCallback(async (paneId) => {
+        if (paneId === MAIN_SESSION_ID) return;
+
+        try {
+            await invoke("close_ssh_session", { sessionId: paneId }).catch(() => {});
+        } finally {
+            setTerminalPanes(prev => {
+                const next = prev.filter(p => p.id !== paneId);
+                return next.map((p, idx) => ({
+                    ...p,
+                    title: p.isPrimary ? "Terminal 1 (Primary)" : `Terminal ${idx + 1}`
+                }));
+            });
+            setActiveTermPaneId(prev => (prev === paneId ? MAIN_SESSION_ID : prev));
+            if (fitAddonRef.current) {
+                setTimeout(() => fitAndResize(fitAddonRef.current, MAIN_SESSION_ID), 100);
+            }
+        }
+    }, []);
+
+    // Draggable resizer between split terminal panes
+    const handleTermSplitResizerMouseDown = useCallback((e) => {
+        e.preventDefault();
+        termSplitResizerDragging.current = true;
+        document.body.style.cursor = termSplitLayout === "columns" ? "col-resize" : "row-resize";
+        document.body.style.userSelect = "none";
+
+        const onMouseMove = (ev) => {
+            if (!termSplitResizerDragging.current || !termMultiPanesRef.current) return;
+            const rect = termMultiPanesRef.current.getBoundingClientRect();
+            if (termSplitLayout === "columns") {
+                const ratio = ((ev.clientX - rect.left) / rect.width) * 100;
+                setTermSplitRatio(Math.max(15, Math.min(85, ratio)));
+            } else {
+                const ratio = ((ev.clientY - rect.top) / rect.height) * 100;
+                setTermSplitRatio(Math.max(15, Math.min(85, ratio)));
+            }
+        };
+
+        const onMouseUp = () => {
+            termSplitResizerDragging.current = false;
+            document.body.style.cursor = "";
+            document.body.style.userSelect = "";
+            document.removeEventListener("mousemove", onMouseMove);
+            document.removeEventListener("mouseup", onMouseUp);
+            if (fitAddonRef.current) {
+                setTimeout(() => fitAndResize(fitAddonRef.current, MAIN_SESSION_ID), 50);
+            }
+        };
+
+        document.addEventListener("mousemove", onMouseMove);
+        document.addEventListener("mouseup", onMouseUp);
+    }, [termSplitLayout]);
+
+    openSplitTerminalRef.current = openSplitTerminal;
+    closeSplitTerminalRef.current = closeSplitTerminal;
 
     const reconnect = useCallback(async () => {
         if (!connectedProfileId) {
@@ -480,6 +722,42 @@ export default function App() {
         }
     }, [connectedProfileId]);
 
+    // Clear the banner as soon as a reconnect lands.
+    useEffect(() => {
+        if (!isReconnecting && connected) setConnectionLost(null);
+    }, [isReconnecting, connected]);
+
+    // Surface a dropped session immediately and try to restore it, within the
+    // attempt budget above.
+    useEffect(() => {
+        if (!connected) return;
+        let unlisten;
+        // This effect re-runs whenever `reconnect` changes identity, so the
+        // register/unregister race is live here, not just on unmount.
+        let cancelled = false;
+        listen(`ssh-error:${MAIN_SESSION_ID}`, (e) => {
+            setConnectionLost(String(e.payload || "Connection lost"));
+            // Only a saved profile can be restored silently — reconnect() has no
+            // credentials for a quick-connect session and would drop the user
+            // back to the login screen, so there we just offer Retry.
+            if (!connectedProfileId) return;
+
+            // Each reconnect starts a fresh reader thread, which will emit
+            // another ssh-error if the host is flapping — so this would retry
+            // forever without a ceiling. Give up after a few rapid attempts and
+            // leave the banner's Retry button to the user. A session that has
+            // been stable for a minute resets the budget.
+            const now = Date.now();
+            const tracker = autoReconnectRef.current;
+            if (now - tracker.lastAt > AUTO_RECONNECT_RESET_MS) tracker.attempts = 0;
+            tracker.lastAt = now;
+            if (tracker.attempts >= AUTO_RECONNECT_MAX_ATTEMPTS) return;
+            tracker.attempts += 1;
+            reconnect();
+        }).then(fn => { if (cancelled) fn(); else unlisten = fn; });
+        return () => { cancelled = true; if (unlisten) unlisten(); };
+    }, [connected, connectedProfileId, reconnect]);
+
     const disconnect = async () => {
         // Tear down every backend session — the main terminal, TermHub panes,
         // log streams and tunnels. Closing only the main session left readers
@@ -505,6 +783,9 @@ export default function App() {
         setCloudBrowserUrl(null);
         setPortConfirm(null);
         confirmedPortsRef.current = new Set();
+        setTerminalPanes([{ id: MAIN_SESSION_ID, title: "Terminal 1 (Primary)", isPrimary: true }]);
+        setActiveTermPaneId(MAIN_SESSION_ID);
+        setTermSplitRatio(50);
         xtermRef.current?.dispose();
         xtermRef.current = null;
     };
@@ -559,6 +840,20 @@ export default function App() {
 
     return (
         <div className="app-shell" onDragOver={(e) => e.preventDefault()}>
+            {connectionLost && (
+                <div className="conn-lost-banner">
+                    <RefreshCw size={13} style={isReconnecting ? { animation: 'spin 1s linear infinite' } : {}} />
+                    <span>
+                        {isReconnecting
+                            ? "Connection dropped — reconnecting…"
+                            : `Connection dropped: ${connectionLost}`}
+                    </span>
+                    {!isReconnecting && (
+                        <button onClick={() => { autoReconnectRef.current.attempts = 0; reconnect(); }}>Retry</button>
+                    )}
+                    <button className="conn-lost-dismiss" onClick={() => setConnectionLost(null)}>Dismiss</button>
+                </div>
+            )}
             <TopBar
                 ip={ip}
                 user={user}
@@ -618,125 +913,163 @@ export default function App() {
                         overflow: "hidden",
                     } : undefined}>
                     <div style={{ display: activeView === "dashboard" ? "flex" : "none", flexDirection: "column", height: "100%", width: "100%" }}>
-                        <ErrorBoundary>
-                            <Dashboard user={user} ip={ip} profileName={profileName} />
-                        </ErrorBoundary>
+                        {mountedViews.has("dashboard") && (
+                            <ErrorBoundary>
+                                <Dashboard user={user} ip={ip} profileName={profileName} active={activeView === "dashboard"} />
+                            </ErrorBoundary>
+                        )}
                     </div>
                     <div style={{ display: activeView === "files" ? "flex" : "none", flexDirection: "column", height: "100%", width: "100%" }}>
-                        <ErrorBoundary>
-                            <FileExplorerLayout profileId={connectedProfileId} />
-                        </ErrorBoundary>
+                        {mountedViews.has("files") && (
+                            <ErrorBoundary>
+                                <FileExplorerLayout profileId={connectedProfileId} />
+                            </ErrorBoundary>
+                        )}
                     </div>
+                    {/* Never gated on visibility: the shell stays live for the whole
+                        session so running work is never interrupted by a tab switch. */}
                     <div style={{ display: activeView === "terminal" ? "flex" : "none", flexDirection: "column", flex: "1 1 0", minHeight: 0, minWidth: 0 }}>
-                        <ErrorBoundary>
-                            <SmartTerminal
-                                xtermRef={xtermRef}
-                                onClose={() => setShowOpsPilot(false)}
-                                layout={smartLayout}
-                                onLayoutChange={() => {}}
-                                ip={ip}
-                                user={user}
-                                port={connPort}
-                                password={connPassword}
-                                privateKey={connPrivateKey}
-                                proxyJump={connProxyJump}
-                                profileId={connectedProfileId}
-                                onOpenCloudBrowser={openInCloudBrowser}
-                            />
-                        </ErrorBoundary>
+                        {mountedViews.has("terminal") && (
+                            <ErrorBoundary>
+                                <SmartTerminal
+                                    xtermRef={xtermRef}
+                                    onClose={() => setShowOpsPilot(false)}
+                                    layout={smartLayout}
+                                    onLayoutChange={() => {}}
+                                    ip={ip}
+                                    user={user}
+                                    port={connPort}
+                                    password={connPassword}
+                                    privateKey={connPrivateKey}
+                                    proxyJump={connProxyJump}
+                                    profileId={connectedProfileId}
+                                    onOpenCloudBrowser={openInCloudBrowser}
+                                />
+                            </ErrorBoundary>
+                        )}
                     </div>
                     <div style={{ display: activeView === "cloudbrowser" ? "flex" : "none", flexDirection: "column", height: "100%", width: "100%" }}>
-                        <ErrorBoundary>
-                            <CloudBrowser
-                                active={activeView === "cloudbrowser"}
-                                url={cloudBrowserUrl}
-                                onClose={() => setCloudBrowserUrl(null)}
-                                onCreateTunnel={() => setActiveView("tunnels")}
-                            />
-                        </ErrorBoundary>
+                        {mountedViews.has("cloudbrowser") && (
+                            <ErrorBoundary>
+                                <CloudBrowser
+                                    active={activeView === "cloudbrowser"}
+                                    url={cloudBrowserUrl}
+                                    onClose={() => setCloudBrowserUrl(null)}
+                                    onCreateTunnel={() => setActiveView("tunnels")}
+                                />
+                            </ErrorBoundary>
+                        )}
                     </div>
                     <div style={{ display: activeView === "termhub" ? "flex" : "none", flexDirection: "column", height: "100%", width: "100%" }}>
-                        <ErrorBoundary>
-                            <TermHub />
-                        </ErrorBoundary>
+                        {mountedViews.has("termhub") && (
+                            <ErrorBoundary>
+                                <TermHub />
+                            </ErrorBoundary>
+                        )}
                     </div>
                     <div style={{ display: activeView === "processes" ? "flex" : "none", flexDirection: "column", height: "100%", width: "100%" }}>
-                        <ErrorBoundary>
-                            <ProcessManager />
-                        </ErrorBoundary>
+                        {mountedViews.has("processes") && (
+                            <ErrorBoundary>
+                                <ProcessManager active={activeView === "processes"} />
+                            </ErrorBoundary>
+                        )}
                     </div>
                     <div style={{ display: activeView === "ports" ? "flex" : "none", flexDirection: "column", height: "100%", width: "100%" }}>
-                        <ErrorBoundary>
-                            <PortScanner />
-                        </ErrorBoundary>
+                        {mountedViews.has("ports") && (
+                            <ErrorBoundary>
+                                <PortScanner />
+                            </ErrorBoundary>
+                        )}
                     </div>
                     <div style={{ display: activeView === "logs" ? "flex" : "none", flexDirection: "column", height: "100%", width: "100%" }}>
-                        <ErrorBoundary>
-                            <LogViewer profileId={connectedProfileId} ip={ip} user={user} port={connPort} password={connPassword} privateKey={connPrivateKey} proxyJump={connProxyJump} />
-                        </ErrorBoundary>
+                        {mountedViews.has("logs") && (
+                            <ErrorBoundary>
+                                <LogViewer profileId={connectedProfileId} ip={ip} user={user} port={connPort} password={connPassword} privateKey={connPrivateKey} proxyJump={connProxyJump} active={activeView === "logs"} />
+                            </ErrorBoundary>
+                        )}
                     </div>
                     <div style={{ display: activeView === "snippets" ? "flex" : "none", flexDirection: "column", height: "100%", width: "100%" }}>
-                        <ErrorBoundary>
-                            <Snippets />
-                        </ErrorBoundary>
+                        {mountedViews.has("snippets") && (
+                            <ErrorBoundary>
+                                <Snippets />
+                            </ErrorBoundary>
+                        )}
                     </div>
                     <div style={{ display: activeView === "vault" ? "flex" : "none", flexDirection: "column", height: "100%", width: "100%" }}>
-                        <ErrorBoundary>
-                            <VaultManager />
-                        </ErrorBoundary>
+                        {mountedViews.has("vault") && (
+                            <ErrorBoundary>
+                                <VaultManager />
+                            </ErrorBoundary>
+                        )}
                     </div>
                     <div style={{ display: activeView === "docker" ? "flex" : "none", flexDirection: "column", height: "100%", width: "100%" }}>
-                        <ErrorBoundary>
-                            <DockerManager />
-                        </ErrorBoundary>
+                        {mountedViews.has("docker") && (
+                            <ErrorBoundary>
+                                <DockerManager active={activeView === "docker"} />
+                            </ErrorBoundary>
+                        )}
                     </div>
                     <div style={{ display: activeView === "tunnels" ? "flex" : "none", flexDirection: "column", height: "100%", width: "100%" }}>
-                        <ErrorBoundary>
-                            <TunnelManager
-                                ip={ip}
-                                user={user}
-                                port={connPort}
-                                password={connPassword}
-                                privateKey={connPrivateKey}
-                                proxyJump={connProxyJump}
-                                profileId={connectedProfileId}
-                                onOpenCloudBrowser={openInCloudBrowser}
-                            />
-                        </ErrorBoundary>
+                        {mountedViews.has("tunnels") && (
+                            <ErrorBoundary>
+                                <TunnelManager
+                                    ip={ip}
+                                    user={user}
+                                    port={connPort}
+                                    password={connPassword}
+                                    privateKey={connPrivateKey}
+                                    proxyJump={connProxyJump}
+                                    profileId={connectedProfileId}
+                                    onOpenCloudBrowser={openInCloudBrowser}
+                                />
+                            </ErrorBoundary>
+                        )}
                     </div>
                     <div style={{ display: activeView === "fleet" ? "flex" : "none", flexDirection: "column", height: "100%", width: "100%" }}>
-                        <ErrorBoundary>
-                            <FleetRunner />
-                        </ErrorBoundary>
+                        {mountedViews.has("fleet") && (
+                            <ErrorBoundary>
+                                <FleetRunner />
+                            </ErrorBoundary>
+                        )}
                     </div>
                     <div style={{ display: activeView === "playbooks" ? "flex" : "none", flexDirection: "column", height: "100%", width: "100%" }}>
-                        <ErrorBoundary>
-                            <PlaybookRunner />
-                        </ErrorBoundary>
+                        {mountedViews.has("playbooks") && (
+                            <ErrorBoundary>
+                                <PlaybookRunner />
+                            </ErrorBoundary>
+                        )}
                     </div>
                     <div style={{ display: activeView === "ufw" ? "flex" : "none", flexDirection: "column", height: "100%", width: "100%" }}>
-                        <ErrorBoundary>
-                            <UFWManager />
-                        </ErrorBoundary>
+                        {mountedViews.has("ufw") && (
+                            <ErrorBoundary>
+                                <UFWManager />
+                            </ErrorBoundary>
+                        )}
                     </div>
                     <div style={{ display: activeView === "apt" ? "flex" : "none", flexDirection: "column", height: "100%", width: "100%" }}>
-                        <ErrorBoundary>
-                            <PackageManager />
-                        </ErrorBoundary>
+                        {mountedViews.has("apt") && (
+                            <ErrorBoundary>
+                                <PackageManager />
+                            </ErrorBoundary>
+                        )}
                     </div>
                     <div style={{ display: activeView === "permissions" ? "flex" : "none", flexDirection: "column", height: "100%", width: "100%" }}>
-                        <ErrorBoundary>
-                            <PermissionModal 
-                                isOpen={activeView === "permissions"} 
-                                sessionId={MAIN_SESSION_ID} 
-                                onClose={() => setActiveView("dashboard")} 
-                            />
-                        </ErrorBoundary>
+                        {mountedViews.has("permissions") && (
+                            <ErrorBoundary>
+                                <PermissionModal
+                                    isOpen={activeView === "permissions"}
+                                    sessionId={MAIN_SESSION_ID}
+                                    onClose={() => setActiveView("dashboard")}
+                                />
+                            </ErrorBoundary>
+                        )}
                     </div>
                     <div style={{ display: activeView === "settings" ? "flex" : "none", flexDirection: "column", height: "100%", width: "100%" }}>
-                        <ErrorBoundary>
-                            <SettingsHub sidebarItems={sidebarItems} setSidebarItems={setSidebarItems} />
-                        </ErrorBoundary>
+                        {mountedViews.has("settings") && (
+                            <ErrorBoundary>
+                                <SettingsHub sidebarItems={sidebarItems} setSidebarItems={setSidebarItems} active={activeView === "settings"} />
+                            </ErrorBoundary>
+                        )}
                     </div>
                 </div>
 
@@ -826,6 +1159,70 @@ export default function App() {
                                 <KeyRound size={12} style={{ color: '#4f7cff' }} />
                                 <span>Vault</span>
                             </button>
+
+                            <button
+                                title="Split Terminal (Alt+T) — Open parallel terminal to same VM"
+                                style={{
+                                    background: 'rgba(56, 139, 253, 0.15)',
+                                    border: '1px solid rgba(56, 139, 253, 0.3)',
+                                    borderRadius: '4px',
+                                    color: '#c9d1d9',
+                                    cursor: 'pointer',
+                                    padding: '2px 7px',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '4px',
+                                    fontSize: '11px',
+                                    fontWeight: 500,
+                                }}
+                                onClick={(e) => { e.stopPropagation(); openSplitTerminal(); }}
+                            >
+                                <Plus size={12} style={{ color: '#58a6ff' }} />
+                                <span>Split</span>
+                            </button>
+
+                            <button
+                                title="Command History — Previous sessions, host & other users' command history"
+                                style={{
+                                    background: isTermHistoryOpen ? 'rgba(56, 189, 248, 0.25)' : 'rgba(56, 189, 248, 0.15)',
+                                    border: `1px solid ${isTermHistoryOpen ? 'rgba(56, 189, 248, 0.5)' : 'rgba(56, 189, 248, 0.3)'}`,
+                                    borderRadius: '4px',
+                                    color: '#c9d1d9',
+                                    cursor: 'pointer',
+                                    padding: '2px 7px',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '4px',
+                                    fontSize: '11px',
+                                    fontWeight: 500,
+                                }}
+                                onClick={(e) => { e.stopPropagation(); setIsTermHistoryOpen(p => !p); }}
+                            >
+                                <Clock size={12} style={{ color: '#38bdf8' }} />
+                                <span>History</span>
+                            </button>
+
+                            {terminalPanes.length > 1 && (
+                                <button
+                                    title={`Switch layout to ${termSplitLayout === 'columns' ? 'Rows' : 'Columns'}`}
+                                    style={{
+                                        background: 'none',
+                                        border: 'none',
+                                        color: '#9ca3af',
+                                        cursor: 'pointer',
+                                        padding: '2px 4px',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                    }}
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        setTermSplitLayout(l => l === 'columns' ? 'rows' : 'columns');
+                                    }}
+                                >
+                                    {termSplitLayout === 'columns' ? <Rows size={13} /> : <Columns2 size={13} />}
+                                </button>
+                            )}
+
                             {terminalOnlyMode && (
                                 <button
                                     title="Open OpsPilot AI"
@@ -851,8 +1248,64 @@ export default function App() {
                             )}
                         </div>
                     </div>
-                    <div className="terminal-container" ref={terminalRef}
-                        style={{ display: (isTerminalOpen || isSmartTerminalActive) ? "block" : "none" }}></div>
+                    <div
+                        className={`term-multi-panes ${termSplitLayout}`}
+                        ref={termMultiPanesRef}
+                        style={{ display: (isTerminalOpen || isSmartTerminalActive || terminalOnlyMode) ? "flex" : "none" }}
+                    >
+                        <div
+                            className={`term-split-pane ${activeTermPaneId === MAIN_SESSION_ID ? "active" : ""}`}
+                            style={terminalPanes.length > 1 ? { flex: terminalPanes.length === 2 ? `${termSplitRatio} 1 0` : "1 1 0" } : { flex: "1 1 0" }}
+                            onClick={() => setActiveTermPaneId(MAIN_SESSION_ID)}
+                        >
+                            {terminalPanes.length > 1 && (
+                                <div className="term-split-pane-bar">
+                                    <div className="term-split-pane-tag">
+                                        <TerminalIcon size={12} className="term-split-icon" />
+                                        <span className="term-split-title">{terminalPanes[0]?.title || "Terminal 1 (Primary)"}</span>
+                                        <span className="term-split-dot primary" />
+                                    </div>
+                                </div>
+                            )}
+                            <div className="terminal-container" ref={terminalRef} style={{ flex: 1, minHeight: 0, height: "100%", width: "100%" }}></div>
+                        </div>
+
+                        {terminalPanes.length > 1 && (
+                            <div
+                                className={`term-pane-resizer ${termSplitLayout}`}
+                                onMouseDown={handleTermSplitResizerMouseDown}
+                            />
+                        )}
+
+                        {terminalPanes.slice(1).map((pane) => (
+                            <TerminalSplitPane
+                                key={pane.id}
+                                sessionId={pane.id}
+                                title={pane.title}
+                                isPrimary={false}
+                                isActive={activeTermPaneId === pane.id}
+                                theme={currentTermTheme}
+                                style={{ flex: terminalPanes.length === 2 ? `${100 - termSplitRatio} 1 0` : "1 1 0" }}
+                                onFocus={() => setActiveTermPaneId(pane.id)}
+                                onClose={() => closeSplitTerminal(pane.id)}
+                                onOpenVault={() => setQuickVaultOpen(true)}
+                                onOpenCloudBrowser={handleLocalLinkClickRef.current}
+                            />
+                        ))}
+
+                        {/* Dedicated Command History Panel for Manual User Terminal */}
+                        <CommandHistoryPanel
+                            isOpen={isTermHistoryOpen}
+                            onClose={() => setIsTermHistoryOpen(false)}
+                            onRun={(cmd) => {
+                                invoke("send_ssh_input", { sessionId: activeTermPaneId || MAIN_SESSION_ID, input: cmd + "\n" });
+                            }}
+                            user={user}
+                            ip={ip}
+                            profileId={connectedProfileId}
+                            sessionId={activeTermPaneId || MAIN_SESSION_ID}
+                        />
+                    </div>
                 </div>
             </div>
             </div>
@@ -866,6 +1319,7 @@ export default function App() {
                     if (action === 'setView') setActiveView(value);
                     if (action === 'disconnect') disconnect();
                     if (action === 'openQuickVault') setQuickVaultOpen(true);
+                    if (action === 'openSplitTerminal') openSplitTerminal();
                 }}
             />
 
