@@ -1035,7 +1035,7 @@ export const DownloadCTA = () => {
           <div style={{ position: "relative", zIndex: 1 }}>
             <div className="badge badge-g" style={{ marginBottom: "1.5rem" }}>
               <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--emerald)", display: "inline-block" }} />
-              v2.0.0 Stable
+              v2.1.0 Stable
             </div>
 
             <h2 style={{ fontSize: "clamp(2.5rem, 5vw, 4.5rem)", marginBottom: "1.25rem", letterSpacing: "-0.045em" }}>
